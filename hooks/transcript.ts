@@ -165,7 +165,7 @@ export function totalsFrom(
     outputTokens: sum.output,
     inputTokens: sum.input,
     cacheReadTokens: sum.cacheRead,
-    cacheHitPercent: sum.input > 0 ? Math.round((sum.cacheRead / sum.input) * 100) : null,
+    cacheHitPercent: sum.input > 0 ? Math.round((sum.cacheRead / sum.input) * 10000) / 100 : null,
     contextPercent,
   }
 }

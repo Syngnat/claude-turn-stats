@@ -156,10 +156,59 @@ test('the band reports the turn as a whole, its own cache hit included', async (
     expect(row?.text).toContain('本轮生成速度 47.5 tok/s')
     expect(row?.text).toContain('本轮共 892 tok')
     // The turn's own hit, beside the session's, which only the fold shows.
-    expect(row?.text).toContain('本轮缓存命中 87%')
+    expect(row?.text).toContain('本轮缓存命中 87.00%')
     expect(row?.text).toContain('3 步')
     await ui.unmount()
   }
+})
+
+test('a whole 100% drops its decimals, and a fractional one keeps two', async ($, on) => {
+  // Only a full 100% loses its decimals: 99.99% still says 99.99%, because
+  // rounding it to 100% would claim a hit the session did not quite reach.
+  // One stored value per test, since the hooks beneath are fixed at the first
+  // call, so each figure gets a test of its own below.
+  on(
+    'state.get',
+    holding({
+      ttftMs: 800,
+      tps: 40,
+      outputTokens: 892,
+      cacheHitPercent: 99.87,
+      steps: 3,
+      isLive: false,
+      elapsedMs: 8000,
+    }),
+  )
+  engineDraws(on)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const row = await ui.find({ type: 'Text', text: /本轮缓存命中/ })
+
+  expect(row?.text).toContain('本轮缓存命中 99.87%')
+  await ui.unmount()
+})
+
+test('a full cache hit reads 100%, with no decimals', async ($, on) => {
+  on(
+    'state.get',
+    holding({
+      ttftMs: 800,
+      tps: 40,
+      outputTokens: 892,
+      cacheHitPercent: 100,
+      steps: 3,
+      isLive: false,
+      elapsedMs: 8000,
+    }),
+  )
+  engineDraws(on)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const row = await ui.find({ type: 'Text', text: /本轮缓存命中/ })
+
+  expect(row?.text).toContain('本轮缓存命中 100%')
+  expect(row?.text).not.toContain('100.00%')
+  await ui.unmount()
 })
 
 test('a turn stored before the cache figure existed leaves it out', async ($, on) => {
@@ -301,7 +350,8 @@ test('unfolded, the band totals the whole transcript under the turn line', async
   expect((await ui.find({ type: 'Text', text: /^38\.8M$/ }))?.text).toBe('38.8M')
   // The folded total's own label, apart from the turn's hit on the line above.
   expect((await ui.find({ type: 'Text', text: /平均缓存命中/ }))?.text).toBe('平均缓存命中')
-  expect((await ui.find({ type: 'Text', text: /99%/ }))?.text).toBe('99%')
+  // 38,206,122 of 38,665,129 is 98.8128…%, kept as two decimals.
+  expect((await ui.find({ type: 'Text', text: /98\.81%/ }))?.text).toBe('98.81%')
   await ui.unmount()
 })
 
@@ -363,7 +413,7 @@ test('a child that cannot read the transcript leaves the stored totals standing'
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
 
   expect((await ui.find({ type: 'Text', text: /50\.0k/ }))?.text).toBe('50.0k')
-  expect((await ui.find({ type: 'Text', text: /90%/ }))?.text).toBe('90%')
+  expect((await ui.find({ type: 'Text', text: /90\.00%/ }))?.text).toBe('90.00%')
   await ui.unmount()
 })
 

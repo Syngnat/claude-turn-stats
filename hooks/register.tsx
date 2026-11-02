@@ -51,6 +51,15 @@ function tokText(tokens: number): string {
   return tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : `${tokens}`
 }
 
+/**
+ * A cache-hit share, to two decimals — except a whole 100%, which keeps no
+ * decimals at all: `100%` is a clear statement, `100.00%` reads like a figure
+ * that kept measuring past the end.
+ */
+function percentText(percent: number): string {
+  return percent >= 100 ? '100%' : `${percent.toFixed(2)}%`
+}
+
 function blankTurn(turnId: string, startedAt: number): Live {
   return {
     turnId,
@@ -111,7 +120,12 @@ function measureOf(turn: Live, now: number): StepStats {
     ttftMs: turn.firstWaitMs === null ? null : Math.round(turn.firstWaitMs),
     tps: tps === null ? null : Math.round(tps * 10) / 10,
     outputTokens: turn.outputTokens > 0 ? turn.outputTokens : null,
-    cacheHitPercent: turn.inputTokens > 0 ? Math.round((turn.cacheReadTokens / turn.inputTokens) * 100) : null,
+    // Kept to two decimals rather than a whole percent: a session that hits the
+    // cache 99.6% of the time should not read as a flat 100%.
+    cacheHitPercent:
+      turn.inputTokens > 0
+        ? Math.round((turn.cacheReadTokens / turn.inputTokens) * 10000) / 100
+        : null,
     steps: turn.steps,
     elapsedMs: Math.round(now - turn.startedAt),
     isLive: !turn.isDone,
@@ -231,7 +245,7 @@ function addToTotals(
     inputTokens,
     cacheReadTokens,
     cacheHitPercent:
-      inputTokens > 0 ? Math.round((cacheReadTokens / inputTokens) * 100) : null,
+      inputTokens > 0 ? Math.round((cacheReadTokens / inputTokens) * 10000) / 100 : null,
     contextPercent: contextPercent ?? base.contextPercent,
   }
 }
@@ -430,7 +444,7 @@ export const register: Register = on => {
         parts.push(`本轮生成速度 ${view.tps.toFixed(1)} tok/s`)
         parts.push(`本轮共 ${tokText(view.outputTokens)} tok`)
         if (view.cacheHitPercent !== null && view.cacheHitPercent !== undefined) {
-          parts.push(`本轮缓存命中 ${view.cacheHitPercent}%`)
+          parts.push(`本轮缓存命中 ${percentText(view.cacheHitPercent)}`)
         }
         // Left out rather than drawn as `undefined` when the value predates it.
         if (view.steps !== undefined && view.steps > 0) {
@@ -489,7 +503,7 @@ export const register: Register = on => {
           // The band above shows the turn's own hit; this one is the session's,
           // measured over every input token the whole transcript was answered
           // over — a token-weighted mean, so a long turn counts for more.
-          ['平均缓存命中', all.cacheHitPercent === null ? '—' : `${all.cacheHitPercent}%`],
+          ['平均缓存命中', all.cacheHitPercent === null ? '—' : percentText(all.cacheHitPercent)],
           ['上下文占用', usage.context.percent === undefined ? '—' : `${usage.context.percent}%`],
         ]
       }
