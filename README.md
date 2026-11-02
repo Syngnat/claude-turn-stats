@@ -9,12 +9,12 @@ Everything is measured on your machine. Nothing is sent anywhere.
 Above the prompt, the turn that just finished (or the one running now):
 
 ```
-⚡ 首 token 等待 1.9s · 本轮生成速度 607.3 tok/s · 本轮共 13.4k tok · 本轮缓存命中 99% · 26 步    会话统计
+⚡ 首 token 等待 1.9s · 本轮生成速度 607.3 tok/s · 本轮共 13.4k tok · 本轮缓存命中 99.12% · 26 步    会话统计
 ```
 
 - **首 token 等待** — the wait from the request going out to the first piece of the answer arriving.
 - **本轮生成速度** — the turn's output tokens over the time they were actually streamed, so the wait is not counted twice.
-- **本轮缓存命中** — the share of that turn's input tokens the prompt cache served.
+- **本轮缓存命中** — the share of that turn's input tokens the prompt cache served, to two decimals (a whole 100% keeps none).
 
 Press **会话统计** and the session's own totals unfold underneath:
 
@@ -26,7 +26,7 @@ Press **会话统计** and the session's own totals unfold underneath:
 ▎输入 token      61.2M
 ▎总 token        61.4M
 ▎缓存读取        60.6M
-▎平均缓存命中    99%
+▎平均缓存命中    98.81%
 ▎上下文占用      29%
 ```
 
