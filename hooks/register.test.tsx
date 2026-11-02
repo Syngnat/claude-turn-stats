@@ -1,0 +1,392 @@
+import { expect, test } from 'claude-code/testing'
+import type { On } from 'claude-code'
+import type { Engine } from 'claude-code/testing'
+
+const BAND = {
+  plugin: 'turn-stats',
+  component: 'AbovePrompt',
+  props: {
+    hasSurvey: false,
+    isWorking: false,
+    maxRows: 3,
+    bodyColumns: 80,
+    scroll: { offset: 0, bodyRows: 3 },
+    view: {},
+  },
+} as const
+
+/**
+ * Answers `state.get` per key with the value as stored (no `Shaped` tag: the
+ * atoms carry none). A key with nothing stored reads as the initial.
+ */
+function holding(stats: unknown, sessionTotals: unknown = null, isExpanded = false) {
+  return (_: unknown, e: { key: string }) => {
+    const byKey: Record<string, unknown> = {
+      last: stats,
+      totals: sessionTotals,
+      isExpanded,
+    }
+
+    return { value: { value: byKey[e.key] ?? undefined, version: 1 } }
+  }
+}
+
+/** The engine's own answer for `$.session.usage`, as the pane reads it. */
+function usageOf(on: On, percent: number | undefined = 31) {
+  on('session.usage', () => ({
+    value: {
+      startedAt: 0,
+      context: { window: 200_000, percent },
+      rateLimits: [],
+    },
+  }))
+}
+
+/**
+ * Answers `$.process.run`: the child that sums the transcript. The pane and the
+ * turn's end both reach the file this way, so every test that draws one needs
+ * this beneath it.
+ */
+function transcriptSums(on: On, sum: unknown) {
+  on('process.run', () => ({
+    value: {
+      exitCode: 0,
+      stdout: JSON.stringify(sum),
+      stderr: '',
+      isStdoutTruncated: false,
+      isStderrTruncated: false,
+    },
+  }))
+}
+
+/**
+ * The session's own start, which is what teaches the mod where the transcript
+ * is: without it the pane has no path to sum and falls back to the stored
+ * totals. Answers the calls `session.start` makes on the way.
+ */
+async function startSession($: Engine, on: On) {
+  on('session.id', () => ({ value: '11112222-3333-4444-5555-666677778888' }))
+  on('env.get', () => ({ value: '/Users/someone' }))
+  on('command.register', () => ({ value: { command: 'turn-stats' } }))
+
+  // `session.start` answers the event's own result (`{ cwd }`), not `{ value }`.
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/Users/someone/project', surface: 'desktop', isInteractive: true })
+}
+
+/** The engine's own drawing beneath the plugin: the band it would draw alone. */
+function engineDraws(on: On) {
+  on('ui.render', ($, e) => {
+    const { Text } = $.ui.resolve(e)
+
+    return <Text>engine</Text>
+  })
+}
+
+test('the band is empty until a turn has been measured', async ($, on) => {
+  on('state.get', holding(null))
+  engineDraws(on)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+  expect(await ui.find({ type: 'Text', text: /首 token|生成速度/ })).toBeUndefined()
+  expect((await ui.find({ type: 'Text', text: 'engine' }))?.text).toBe('engine')
+  await ui.unmount()
+})
+
+test('a value stored before `steps` existed still draws, without it', async ($, on) => {
+  // What the earlier version wrote: no `steps`. An added field is compatible,
+  // so the turn still shows — and `步` is left out rather than `undefined`.
+  on('state.get', holding({ ttftMs: 995, tps: 199.5, outputTokens: 570, isLive: false, elapsedMs: 3800 }))
+  engineDraws(on)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+  const row = await ui.find({ type: 'Text', text: /首 token/ })
+  expect(row?.text).toBe('首 token 等待 995ms · 本轮生成速度 199.5 tok/s · 本轮共 570 tok')
+  expect(row?.text).not.toContain('undefined')
+  await ui.unmount()
+})
+
+test('a turn waiting on its first token says so in one line, no placeholder', async ($, on) => {
+  on(
+    'state.get',
+    holding({
+      ttftMs: null,
+      tps: null,
+      outputTokens: null,
+      steps: 1,
+      isLive: true,
+      elapsedMs: 1000,
+    }),
+  )
+  engineDraws(on)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+  // One sentence, no `…` placeholder and no second bare timer beside it.
+  const row = await ui.find({ type: 'Text', text: /首 token/ })
+  expect(row?.text).toBe('首 token 等待中 1.0s')
+  expect(await ui.find({ type: 'Text', text: /\.\.\./ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('the band reports the turn as a whole, its own cache hit included', async ($, on) => {
+  on(
+    'state.get',
+    holding({
+      ttftMs: 820,
+      tps: 47.5,
+      outputTokens: 892,
+      cacheHitPercent: 87,
+      steps: 3,
+      isLive: false,
+      elapsedMs: 8400,
+    }),
+  )
+  engineDraws(on)
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...BAND, surface })
+
+    // Every number carries the words that say what it measures, and the row
+    // says whose numbers these are: the turn's, not one request's.
+    const row = await ui.find({ type: 'Text', text: /首 token/ })
+    expect(row?.text).toContain('首 token 等待 820ms')
+    expect(row?.text).toContain('本轮生成速度 47.5 tok/s')
+    expect(row?.text).toContain('本轮共 892 tok')
+    // The turn's own hit, beside the session's, which only the fold shows.
+    expect(row?.text).toContain('本轮缓存命中 87%')
+    expect(row?.text).toContain('3 步')
+    await ui.unmount()
+  }
+})
+
+test('a turn stored before the cache figure existed leaves it out', async ($, on) => {
+  on(
+    'state.get',
+    holding({ ttftMs: 820, tps: 47.5, outputTokens: 892, steps: 3, isLive: false, elapsedMs: 8400 }),
+  )
+  engineDraws(on)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+  const row = await ui.find({ type: 'Text', text: /首 token/ })
+  expect(row?.text).not.toContain('缓存')
+  expect(row?.text).not.toContain('undefined')
+  await ui.unmount()
+})
+
+test('a turn still running shows the wait, not a rate', async ($, on) => {
+  on(
+    'state.get',
+    holding({
+      ttftMs: 1200,
+      tps: null,
+      outputTokens: null,
+      steps: 1,
+      isLive: true,
+      elapsedMs: 2400,
+    }),
+  )
+  engineDraws(on)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+  const row = await ui.find({ type: 'Text', text: /首 token/ })
+  expect(row?.text).toContain('首 token 等待 1.2s')
+  expect(row?.text).toContain('已耗时 2.4s')
+  expect(row?.text).not.toContain('生成速度')
+  await ui.unmount()
+})
+
+test('a survey in the band wins over the stats', async ($, on) => {
+  on(
+    'state.get',
+    holding({ ttftMs: 800, tps: 40, outputTokens: 892, steps: 3, isLive: false, elapsedMs: 8000 }),
+  )
+  engineDraws(on)
+
+  const ui = await $.ui.mount({
+    ...BAND,
+    surface: 'desktop',
+    props: { ...BAND.props, hasSurvey: true },
+  })
+
+  expect(await ui.find({ type: 'Text', text: /首 token/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a value left under an old shape tag draws its inside, not undefined', async ($, on) => {
+  // What the version with a `shape` tag wrote: the fields sit one level down.
+  // Read straight, `view.tps` is undefined and `.toFixed` throws — the band then
+  // goes blank and the transcript says the hook was skipped.
+  on('state.get', (_: unknown, e: { key: string }) => ({
+    value: {
+      value:
+        e.key === 'last'
+          ? { shape: 'turn-stats-2', value: { ttftMs: 820, tps: 47.5, outputTokens: 892, isLive: false, elapsedMs: 8400 } }
+          : e.key === 'isExpanded'
+            ? false
+            : undefined,
+      version: 1,
+    },
+  }))
+  engineDraws(on)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+  const row = await ui.find({ type: 'Text', text: /首 token/ })
+  expect(row?.text).toContain('本轮生成速度 47.5 tok/s')
+  expect(row?.text).not.toContain('undefined')
+  await ui.unmount()
+})
+
+test('a stored value of another shape draws nothing rather than throwing', async ($, on) => {
+  // Anything at all may be sitting under the key; a drawing hook that assumed
+  // its own shape would throw and take the band with it.
+  on('state.get', () => ({ value: { value: { somethingElse: true }, version: 1 } }))
+  engineDraws(on)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+  expect(await ui.find({ type: 'Text', text: /首 token/ })).toBeUndefined()
+  expect((await ui.find({ type: 'Text', text: 'engine' }))?.text).toBe('engine')
+  await ui.unmount()
+})
+
+test('the band has one button, labelled for the fold it flips', async ($, on) => {
+  on(
+    'state.get',
+    holding({ ttftMs: 800, tps: 40, outputTokens: 892, steps: 3, isLive: false, elapsedMs: 8000 }),
+  )
+  engineDraws(on)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+  const buttons = await ui.findAll({ type: 'Button' })
+  expect(buttons.map(one => one.text)).toEqual(['会话统计'])
+  await ui.unmount()
+})
+
+test('unfolded, the band totals the whole transcript under the turn line', async ($, on) => {
+  // The transcript's sums cover the session from its first response; the
+  // averages are this mod's own, since the file records tokens, not waits.
+  on(
+    'state.get',
+    holding(
+      { ttftMs: 800, tps: 40, outputTokens: 892, steps: 3, isLive: false, elapsedMs: 8000 },
+      { turns: 12, steps: 241, ttftMs: 2900, tps: 292, contextPercent: 31 },
+      true,
+    ),
+  )
+  usageOf(on)
+  transcriptSums(on, { responses: 218, input: 38_665_129, output: 180_562, cacheRead: 38_206_122 })
+  engineDraws(on)
+  await startSession($, on)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+  // The turn's own line is still there above the totals.
+  expect((await ui.find({ type: 'Text', text: /本轮生成速度/ }))?.text).toContain('本轮生成速度 40.0 tok/s')
+
+  expect((await ui.find({ type: 'Text', text: /12 轮 241 步/ }))?.text).toBe('12 轮 241 步')
+  expect((await ui.find({ type: 'Text', text: /首 token 平均/ }))?.text).toBe('首 token 平均')
+  expect((await ui.find({ type: 'Text', text: /2\.9s/ }))?.text).toBe('2.9s')
+  expect((await ui.find({ type: 'Text', text: /292\.0 tok\/s/ }))?.text).toBe('292.0 tok/s')
+  // The token figures come from the file, so they are the session's whole.
+  expect((await ui.find({ type: 'Text', text: /180\.6k/ }))?.text).toBe('180.6k')
+  expect((await ui.find({ type: 'Text', text: /38\.7M/ }))?.text).toBe('38.7M')
+  // In and out added up: 38,665,129 + 180,562 = 38,845,691.
+  expect((await ui.find({ type: 'Text', text: /^38\.8M$/ }))?.text).toBe('38.8M')
+  // The folded total's own label, apart from the turn's hit on the line above.
+  expect((await ui.find({ type: 'Text', text: /平均缓存命中/ }))?.text).toBe('平均缓存命中')
+  expect((await ui.find({ type: 'Text', text: /99%/ }))?.text).toBe('99%')
+  await ui.unmount()
+})
+
+test('folded, the band draws no totals at all', async ($, on) => {
+  on(
+    'state.get',
+    holding(
+      { ttftMs: 800, tps: 40, outputTokens: 892, steps: 3, isLive: false, elapsedMs: 8000 },
+      { turns: 12, steps: 241, ttftMs: 2900, tps: 292, contextPercent: 31 },
+      false,
+    ),
+  )
+  usageOf(on)
+  transcriptSums(on, { responses: 218, input: 38_665_129, output: 180_562, cacheRead: 38_206_122 })
+  engineDraws(on)
+  await startSession($, on)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+  expect(await ui.find({ type: 'Text', text: /轮次 \/ 步数|首 token 平均/ })).toBeUndefined()
+  expect((await ui.find({ type: 'Button' }))?.text).toBe('会话统计')
+  await ui.unmount()
+})
+
+test('a child that cannot read the transcript leaves the stored totals standing', async ($, on) => {
+  // No python3, or a file the child may not read: the band keeps what the last
+  // turn's end stored rather than drawing zeros.
+  on(
+    'state.get',
+    holding(
+      { ttftMs: 800, tps: 40, outputTokens: 892, steps: 3, isLive: false, elapsedMs: 8000 },
+      {
+        turns: 3,
+        steps: 20,
+        ttftMs: 2100,
+        tps: 250,
+        outputTokens: 50_000,
+        inputTokens: 1_000_000,
+        cacheReadTokens: 900_000,
+        cacheHitPercent: 90,
+        contextPercent: 20,
+      },
+      true,
+    ),
+  )
+  usageOf(on)
+  on('process.run', () => ({
+    value: {
+      exitCode: 1,
+      stdout: '',
+      stderr: 'python3: command not found',
+      isStdoutTruncated: false,
+      isStderrTruncated: false,
+    },
+  }))
+  engineDraws(on)
+  await startSession($, on)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+  expect((await ui.find({ type: 'Text', text: /50\.0k/ }))?.text).toBe('50.0k')
+  expect((await ui.find({ type: 'Text', text: /90%/ }))?.text).toBe('90%')
+  await ui.unmount()
+})
+
+test('with nothing measured yet, the unfolded band says so', async ($, on) => {
+  on(
+    'state.get',
+    holding({ ttftMs: 800, tps: 40, outputTokens: 892, steps: 3, isLive: false, elapsedMs: 8000 }, null, true),
+  )
+  usageOf(on)
+  on('process.run', () => ({
+    value: {
+      exitCode: 0,
+      stdout: JSON.stringify({ responses: 0, input: 0, output: 0, cacheRead: 0 }),
+      stderr: '',
+      isStdoutTruncated: false,
+      isStderrTruncated: false,
+    },
+  }))
+  engineDraws(on)
+  await startSession($, on)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+  expect((await ui.find({ type: 'Text', text: /还没有可统计的数据/ }))?.text).toBe('还没有可统计的数据')
+  await ui.unmount()
+})

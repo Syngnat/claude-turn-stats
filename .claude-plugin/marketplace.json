@@ -1,0 +1,5 @@
+{
+  "name": "claude-turn-stats",
+  "owner": { "name": "Syngnat" },
+  "plugins": [{ "name": "turn-stats", "source": "./" }]
+}

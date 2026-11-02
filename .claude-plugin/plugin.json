@@ -1,0 +1,5 @@
+{
+  "name": "turn-stats",
+  "version": "0.1.0",
+  "description": "Shows first-token latency and output TPS above the prompt"
+}
