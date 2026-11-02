@@ -156,15 +156,14 @@ test('the band reports the turn as a whole, its own cache hit included', async (
     expect(row?.text).toContain('本轮生成速度 47.5 tok/s')
     expect(row?.text).toContain('本轮共 892 tok')
     // The turn's own hit, beside the session's, which only the fold shows.
-    expect(row?.text).toContain('本轮缓存命中 87.00%')
+    expect(row?.text).toContain('本轮缓存命中 87%')
     expect(row?.text).toContain('3 步')
     await ui.unmount()
   }
 })
 
-test('a whole 100% drops its decimals, and a fractional one keeps two', async ($, on) => {
-  // Only a full 100% loses its decimals: 99.99% still says 99.99%, because
-  // rounding it to 100% would claim a hit the session did not quite reach.
+test('a share with a fraction keeps it, to two decimals', async ($, on) => {
+  // A fraction is never rounded up to a flat percent: 99.87% keeps its digits.
   // One stored value per test, since the hooks beneath are fixed at the first
   // call, so each figure gets a test of its own below.
   on(
@@ -188,7 +187,7 @@ test('a whole 100% drops its decimals, and a fractional one keeps two', async ($
   await ui.unmount()
 })
 
-test('a full cache hit reads 100%, with no decimals', async ($, on) => {
+test('a whole percent carries no decimals at all', async ($, on) => {
   on(
     'state.get',
     holding({
@@ -206,8 +205,32 @@ test('a full cache hit reads 100%, with no decimals', async ($, on) => {
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
   const row = await ui.find({ type: 'Text', text: /本轮缓存命中/ })
 
+  // No padded zeros: `100%`, not `100.00%`.
   expect(row?.text).toContain('本轮缓存命中 100%')
   expect(row?.text).not.toContain('100.00%')
+  await ui.unmount()
+})
+
+test('a one-decimal share keeps its one decimal, not two', async ($, on) => {
+  on(
+    'state.get',
+    holding({
+      ttftMs: 800,
+      tps: 40,
+      outputTokens: 892,
+      cacheHitPercent: 99.9,
+      steps: 3,
+      isLive: false,
+      elapsedMs: 8000,
+    }),
+  )
+  engineDraws(on)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const row = await ui.find({ type: 'Text', text: /本轮缓存命中/ })
+
+  expect(row?.text).toContain('本轮缓存命中 99.9%')
+  expect(row?.text).not.toContain('99.90%')
   await ui.unmount()
 })
 
@@ -413,7 +436,7 @@ test('a child that cannot read the transcript leaves the stored totals standing'
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
 
   expect((await ui.find({ type: 'Text', text: /50\.0k/ }))?.text).toBe('50.0k')
-  expect((await ui.find({ type: 'Text', text: /90\.00%/ }))?.text).toBe('90.00%')
+  expect((await ui.find({ type: 'Text', text: /^90%$/ }))?.text).toBe('90%')
   await ui.unmount()
 })
 

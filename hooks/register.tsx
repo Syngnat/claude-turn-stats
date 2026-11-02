@@ -52,12 +52,17 @@ function tokText(tokens: number): string {
 }
 
 /**
- * A cache-hit share, to two decimals — except a whole 100%, which keeps no
- * decimals at all: `100%` is a clear statement, `100.00%` reads like a figure
- * that kept measuring past the end.
+ * A cache-hit share: no decimals when it lands on a whole percent, otherwise up
+ * to two. `87%` is the whole figure and reads as one; `87.00%` says the same
+ * thing with trailing zeros that measure nothing. A share with real fraction
+ * keeps it — `98.81%`, never rounded up to a flat 99%.
  */
 function percentText(percent: number): string {
-  return percent >= 100 ? '100%' : `${percent.toFixed(2)}%`
+  const rounded = Math.round(percent * 100) / 100
+
+  // `String` gives the shortest form that reads back the same number, so 87
+  // stays `87`, 99.9 is `99.9`, and 98.81 is `98.81` — no zero is padded in.
+  return `${String(rounded)}%`
 }
 
 function blankTurn(turnId: string, startedAt: number): Live {
