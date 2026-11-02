@@ -463,6 +463,37 @@ test('a wide band lays the totals in two columns, a narrow one in one', async ($
   }
 })
 
+test('the two figures read first are drawn in the accent colour, the rest dim', async ($, on) => {
+  on(
+    'state.get',
+    holding(
+      { ttftMs: 800, tps: 40, outputTokens: 892, steps: 3, isLive: false, elapsedMs: 8000 },
+      { turns: 12, steps: 241, ttftMs: 2900, tps: 292, cacheHitPercent: 99, contextPercent: 31 },
+      true,
+    ),
+  )
+  usageOf(on)
+  transcriptSums(on, { responses: 218, input: 38_665_129, output: 180_562, cacheRead: 38_206_122 })
+  engineDraws(on)
+  await startSession($, on)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+  const speed = await ui.find({ type: 'Text', text: '平均输出速度' })
+  expect(speed?.props.color).toBe('claude')
+  expect(speed?.props.dimColor).toBe(false)
+
+  const hit = await ui.find({ type: 'Text', text: '平均缓存命中' })
+  expect(hit?.props.color).toBe('claude')
+
+  // The others stay quiet, so the two stand out rather than competing.
+  const turns = await ui.find({ type: 'Text', text: '轮次 / 步数' })
+  expect(turns?.props.dimColor).toBe(true)
+  expect(turns?.props.color).toBeUndefined()
+
+  await ui.unmount()
+})
+
 test('the band has one button, labelled for the fold it flips', async ($, on) => {
   on(
     'state.get',

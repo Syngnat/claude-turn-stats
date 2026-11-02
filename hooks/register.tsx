@@ -536,7 +536,9 @@ export const register: Register = on => {
     // Unfolded, the session's own arithmetic: the averages this mod measured,
     // over the whole transcript's tokens. Read here, on the way in, so they are
     // as the file stands now; nothing is stored — a drawing hook may not write.
-    let details: Array<[string, string]> = []
+    // Each row carries whether it is one of the two figures the person reads
+    // first: those labels are drawn in the accent colour, the rest dim.
+    let details: Array<[string, string, boolean]> = []
     if (isOpen) {
       // `$.state` first, then what the store kept from before a restart: the
       // transcript alone cannot say how many turns ran or how long they waited.
@@ -563,27 +565,27 @@ export const register: Register = on => {
       // Nothing measured and nothing in the file: there is no total to draw,
       // and eight rows of dashes would say less than one line does.
       if (all === null || (all.turns === 0 && all.outputTokens === 0 && all.inputTokens === 0)) {
-        details = [['会话统计', '还没有可统计的数据']]
+        details = [['会话统计', '还没有可统计的数据', false]]
       } else {
         details = [
           // What was measured, in the order it was measured: how much ran, how
           // long the first token took, how fast the rest came.
-          ['轮次 / 步数', `${all.turns} 轮 ${all.steps} 步`],
-          ['首 token 平均', all.ttftMs === null ? '—' : msText(all.ttftMs)],
-          ['平均输出速度', all.tps === null ? '—' : `${all.tps.toFixed(1)} tok/s`],
+          ['轮次 / 步数', `${all.turns} 轮 ${all.steps} 步`, false],
+          ['首 token 平均', all.ttftMs === null ? '—' : msText(all.ttftMs), false],
+          ['平均输出速度', all.tps === null ? '—' : `${all.tps.toFixed(1)} tok/s`, true],
           // Then the four figures that are all one thing — the session's tokens:
           // what went in, how much of that the cache served, what came out, and
           // what the whole traffic adds up to. Grouped, because read apart they
           // look like four unrelated numbers.
-          ['输入 token', tokText(all.inputTokens)],
-          ['缓存读取', tokText(all.cacheReadTokens)],
-          ['输出 token', tokText(all.outputTokens)],
-          ['总 token', tokText(all.outputTokens + all.inputTokens)],
+          ['输入 token', tokText(all.inputTokens), false],
+          ['缓存读取', tokText(all.cacheReadTokens), false],
+          ['输出 token', tokText(all.outputTokens), false],
+          ['总 token', tokText(all.outputTokens + all.inputTokens), false],
           // The band above shows the turn's own hit; this one is the session's,
           // measured over every input token the whole transcript was answered
           // over — a token-weighted mean, so a long turn counts for more.
-          ['平均缓存命中', all.cacheHitPercent === null ? '—' : percentText(all.cacheHitPercent)],
-          ['上下文占用', usage.context.percent === undefined ? '—' : `${usage.context.percent}%`],
+          ['平均缓存命中', all.cacheHitPercent === null ? '—' : percentText(all.cacheHitPercent), true],
+          ['上下文占用', usage.context.percent === undefined ? '—' : `${usage.context.percent}%`, false],
         ]
       }
     }
@@ -592,7 +594,7 @@ export const register: Register = on => {
     // label column, a value column, and four cells between. Below that width
     // the second column would wrap, which reads worse than a longer list.
     const COLUMN_CELLS = 14 + 10 + 4 + 4
-    const columns: Array<Array<[string, string]>> = []
+    const columns: Array<Array<[string, string, boolean]>> = []
     if (details.length > 0) {
       if (e.props.bodyColumns >= COLUMN_CELLS * 2 && details.length > 4) {
         // Split by what each column is about, not at the halfway mark: the
@@ -645,14 +647,16 @@ export const register: Register = on => {
           >
             {columns.map((column, at) => (
               <Box key={`column-${at}`} flexDirection="column" marginRight={4}>
-                {column.map(([label, value]) => (
+                {column.map(([label, value, isKey]) => (
                   <Box key={label} gap={2}>
                     {/* One width for every label, so the values line up whatever
                         the label's own length — CJK glyphs take two cells each. */}
                     <Box width={14}>
-                      <Text dimColor>{label}</Text>
+                      <Text color={isKey ? 'claude' : undefined} dimColor={!isKey}>
+                        {label}
+                      </Text>
                     </Box>
-                    <Text>{value}</Text>
+                    <Text bold={isKey}>{value}</Text>
                   </Box>
                 ))}
               </Box>
