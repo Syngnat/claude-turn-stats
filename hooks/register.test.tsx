@@ -35,8 +35,8 @@ function holding(stats: unknown, sessionTotals: unknown = null, isExpanded = fal
 }
 
 /** Answers `$.store.get` with what a restart left behind, for the id given. */
-function storeHolds(on: On, sessionId: string, turn: unknown) {
-  on('store.get', () => ({ value: { sessionId, turn } }))
+function storeHolds(on: On, sessionId: string, turn: unknown, sessionTotals: unknown = null) {
+  on('store.get', () => ({ value: { sessionId, turn, totals: sessionTotals } }))
 }
 
 /** The engine's own answer for `$.session.usage`, as the pane reads it. */
@@ -119,6 +119,44 @@ test('a restart shows the last turn again, from the store', async ($, on) => {
   const row = await ui.find({ type: 'Text', text: /首 token/ })
   expect(row?.text).toContain('首 token 等待 1.9s')
   expect(row?.text).toContain('本轮生成速度 607.3 tok/s')
+  await ui.unmount()
+})
+
+test('after a restart, the unfolded totals keep the turns the transcript cannot', async ($, on) => {
+  // The transcript brings back the token counts, but records no turn boundaries
+  // and no waiting: `轮次 / 步数` and the averages have to come from the store.
+  // Without that the band read `0 轮 0 步` beside a real token total.
+  on('state.get', holding(null, null, true))
+  usageOf(on)
+  transcriptSums(on, { responses: 218, input: 38_665_129, output: 180_562, cacheRead: 38_206_122 })
+  storeHolds(
+    on,
+    SESSION_ID,
+    { ttftMs: 1900, tps: 607.3, outputTokens: 13400, steps: 26, isLive: false, elapsedMs: 24000 },
+    {
+      turns: 7,
+      steps: 108,
+      ttftMs: 2800,
+      tps: 441.4,
+      outputTokens: 214_800,
+      inputTokens: 61_200_000,
+      cacheReadTokens: 60_600_000,
+      cacheHitPercent: 99,
+      contextPercent: 29,
+    },
+  )
+  engineDraws(on)
+  await startSession($, on)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+  // The turns and the averages come back from the store…
+  expect((await ui.find({ type: 'Text', text: /7 轮 108 步/ }))?.text).toBe('7 轮 108 步')
+  expect((await ui.find({ type: 'Text', text: /2\.8s/ }))?.text).toBe('2.8s')
+  expect((await ui.find({ type: 'Text', text: /441\.4 tok\/s/ }))?.text).toBe('441.4 tok/s')
+  // …while the token counts are the transcript's, which covers the whole file.
+  expect((await ui.find({ type: 'Text', text: /180\.6k/ }))?.text).toBe('180.6k')
+  expect((await ui.find({ type: 'Text', text: /38\.8M/ }))?.text).toBe('38.8M')
   await ui.unmount()
 })
 

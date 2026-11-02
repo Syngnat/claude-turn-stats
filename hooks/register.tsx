@@ -61,20 +61,31 @@ function tokText(tokens: number): string {
 const STORE_KEY = 'turn-stats.lastTurn'
 
 /**
- * The last turn's figures as `$.store` holds them: the session they were
- * measured in, and the value itself. A store entry that names another session
- * is not this conversation's, and one written by an older version may hold any
- * shape at all — both read as nothing here.
+ * What `$.store` keeps between sessions: the last turn's figures and the
+ * session's own running totals, both filed under the session they were measured
+ * in.
+ *
+ * Both are here because both die with `$.state`. The transcript brings back the
+ * token counts on its own, but it records no turn boundaries and no waiting, so
+ * `轮次 / 步数` and the averages have nowhere else to come from — without this
+ * a restarted band read `0 轮 0 步` beside a real token total.
+ *
+ * A store entry that names another session is not this conversation's, and one
+ * written by an older version may hold any shape at all — both read as nothing.
  */
-type StoredTurn = { sessionId: string; turn: StepStats }
+type StoredSession = { sessionId: string; turn: StepStats | null; totals: SessionTotals | null }
 
-function readStoredTurn(raw: unknown, sessionId: string | null): StepStats | null {
+function readStoredSession(raw: unknown, sessionId: string | null): StoredSession | null {
   if (sessionId === null || raw === null || typeof raw !== 'object') return null
 
-  const held = raw as Partial<StoredTurn>
+  const held = raw as Partial<StoredSession>
   if (held.sessionId !== sessionId) return null
 
-  return normalizeTurn(held.turn)
+  return {
+    sessionId,
+    turn: normalizeTurn(held.turn),
+    totals: normalizeTotals(held.totals),
+  }
 }
 
 function percentText(percent: number): string {
@@ -442,11 +453,11 @@ export const register: Register = on => {
     await update($, last, () => done)
     await update($, totals, () => nextTotals)
 
-    // `$.state` ends with the session, so the same figure goes to `$.store`
+    // `$.state` ends with the session, so what it holds goes to `$.store` too,
     // with the session it belongs to: a restart of this conversation finds it,
     // another conversation's does not.
     if (sessionId !== null) {
-      const stored: StoredTurn = { sessionId, turn: done }
+      const stored: StoredSession = { sessionId, turn: done, totals: nextTotals }
       await $.store.set(STORE_KEY, stored)
     }
 
@@ -473,12 +484,14 @@ export const register: Register = on => {
     const turn = live
     let view = turn !== null ? measureOf(turn, await $.clock.now()) : normalizeTurn(await read($, last))
 
-    // A restart empties `$.state` while the conversation goes on. The last turn
-    // was also left in `$.store`, under this session's id, so the band can show
-    // it again instead of starting blank — and a figure another conversation
-    // left there is not this one's, so the id is checked before it is drawn.
+    // A restart empties `$.state` while the conversation goes on. What it held
+    // was also left in `$.store`, under this session's id, so the band and the
+    // unfolded totals can come back instead of starting blank — and a figure
+    // another conversation left there is not this one's, so the id is checked.
+    let restored: StoredSession | null = null
     if (view === null && sessionId !== null) {
-      view = readStoredTurn(await $.store.get(STORE_KEY), sessionId)
+      restored = readStoredSession(await $.store.get(STORE_KEY), sessionId)
+      view = restored?.turn ?? null
     }
 
     const { Box, Button, Text } = $.ui.resolve(e)
@@ -525,7 +538,9 @@ export const register: Register = on => {
     // as the file stands now; nothing is stored — a drawing hook may not write.
     let details: Array<[string, string]> = []
     if (isOpen) {
-      const held = normalizeTotals(await read($, totals))
+      // `$.state` first, then what the store kept from before a restart: the
+      // transcript alone cannot say how many turns ran or how long they waited.
+      const held = normalizeTotals(await read($, totals)) ?? restored?.totals ?? null
       const usage = await $.session.usage()
       const sum =
         transcriptPath === null
