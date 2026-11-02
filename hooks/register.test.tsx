@@ -134,13 +134,13 @@ test('a restart shows the last turn again, from the store', async ($, on) => {
   await ui.unmount()
 })
 
-test('after a restart, the unfolded totals keep the turns the transcript cannot', async ($, on) => {
+test('after a restart, the averages come back from the store, the counts from the file', async ($, on) => {
   // The transcript brings back the token counts, but records no turn boundaries
   // and no waiting: `轮次 / 步数` and the averages have to come from the store.
   // Without that the band read `0 轮 0 步` beside a real token total.
   on('state.get', holding(null, null, true))
   usageOf(on)
-  transcriptSums(on, { responses: 218, input: 38_665_129, output: 180_562, cacheRead: 38_206_122 })
+  transcriptSums(on, { turns: 12, responses: 241, input: 38_665_129, output: 180_562, cacheRead: 38_206_122 })
   storeHolds(
     on,
     SESSION_ID,
@@ -162,8 +162,9 @@ test('after a restart, the unfolded totals keep the turns the transcript cannot'
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
 
-  // The turns and the averages come back from the store…
-  expect((await ui.find({ type: 'Text', text: /7 轮 108 步/ }))?.text).toBe('7 轮 108 步')
+  // The counts are the transcript's — the same history the tokens come from —
+  // while the averages, which the file cannot record, come back from the store.
+  expect((await ui.find({ type: 'Text', text: /12 轮 241 步/ }))?.text).toBe('12 轮 241 步')
   expect((await ui.find({ type: 'Text', text: /2\.8s/ }))?.text).toBe('2.8s')
   expect((await ui.find({ type: 'Text', text: /441\.4 tok\/s/ }))?.text).toBe('441.4 tok/s')
   // …while the token counts are the transcript's, which covers the whole file.
@@ -446,7 +447,7 @@ test('a wide band lays the totals in two columns, a narrow one in one', async ($
     ),
   )
   usageOf(on)
-  transcriptSums(on, { responses: 218, input: 38_665_129, output: 180_562, cacheRead: 38_206_122 })
+  transcriptSums(on, { turns: 12, responses: 241, input: 38_665_129, output: 180_562, cacheRead: 38_206_122 })
   engineDraws(on)
   await startSession($, on)
 
@@ -487,7 +488,7 @@ test('the two figures read first are drawn in the accent colour, the rest dim', 
     ),
   )
   usageOf(on)
-  transcriptSums(on, { responses: 218, input: 38_665_129, output: 180_562, cacheRead: 38_206_122 })
+  transcriptSums(on, { turns: 12, responses: 241, input: 38_665_129, output: 180_562, cacheRead: 38_206_122 })
   engineDraws(on)
   await startSession($, on)
 
@@ -542,6 +543,28 @@ test('the turn line colours the same two figures as the fold', async ($, on) => 
   await ui.unmount()
 })
 
+
+test('a turn the file has not recorded yet adds its steps once', async ($, on) => {
+  // The file is written as responses settle, so a long turn's early steps are
+  // not in it yet. Reading the unfolded totals while it runs must keep them
+  // moving — and must not add again what the file already holds.
+  on('state.get', holding(null, null, true))
+  usageOf(on)
+  // The file knows 12 turns and 241 steps.
+  transcriptSums(on, { turns: 12, responses: 241, input: 38_665_129, output: 180_562, cacheRead: 38_206_122 })
+  on('store.get', () => ({ value: undefined }))
+  engineDraws(on)
+
+  await startSession($, on)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+  // Nothing is running, so the counts are exactly the file's own.
+  expect((await ui.find({ type: 'Text', text: /12 轮 241 步/ }))?.text).toBe('12 轮 241 步')
+
+  await ui.unmount()
+})
+
 test('the band has one button, labelled for the fold it flips', async ($, on) => {
   on(
     'state.get',
@@ -568,7 +591,7 @@ test('unfolded, the band totals the whole transcript under the turn line', async
     ),
   )
   usageOf(on)
-  transcriptSums(on, { responses: 218, input: 38_665_129, output: 180_562, cacheRead: 38_206_122 })
+  transcriptSums(on, { turns: 12, responses: 241, input: 38_665_129, output: 180_562, cacheRead: 38_206_122 })
   engineDraws(on)
   await startSession($, on)
 
@@ -603,7 +626,7 @@ test('folded, the band draws no totals at all', async ($, on) => {
     ),
   )
   usageOf(on)
-  transcriptSums(on, { responses: 218, input: 38_665_129, output: 180_562, cacheRead: 38_206_122 })
+  transcriptSums(on, { turns: 12, responses: 241, input: 38_665_129, output: 180_562, cacheRead: 38_206_122 })
   engineDraws(on)
   await startSession($, on)
 
@@ -664,7 +687,7 @@ test('with nothing measured yet, the unfolded band says so', async ($, on) => {
   on('process.run', () => ({
     value: {
       exitCode: 0,
-      stdout: JSON.stringify({ responses: 0, input: 0, output: 0, cacheRead: 0 }),
+      stdout: JSON.stringify({ turns: 0, responses: 0, input: 0, output: 0, cacheRead: 0 }),
       stderr: '',
       isStdoutTruncated: false,
       isStderrTruncated: false,

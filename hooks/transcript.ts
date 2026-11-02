@@ -35,6 +35,7 @@ output_tokens = 0
 cache_read = 0
 cache_creation = 0
 responses = 0
+turns = 0
 
 with open(path, "r", encoding="utf-8", errors="replace") as f:
     for line in f:
@@ -45,6 +46,24 @@ with open(path, "r", encoding="utf-8", errors="replace") as f:
             row = json.loads(line)
         except Exception:
             continue
+        if row.get("type") == "user":
+            # A human turn: a user row with no tool_result block. The engine also
+            # writes user rows that carry tool results, and rows it raises itself
+            # (isMeta) — neither is something the person typed, so neither counts.
+            message = row.get("message")
+            if not isinstance(message, dict):
+                continue
+            content = message.get("content")
+            blocks = content if isinstance(content, list) else []
+            is_tool_result = any(
+                isinstance(block, dict) and block.get("type") == "tool_result"
+                for block in blocks
+            )
+            if is_tool_result or row.get("isMeta"):
+                continue
+            turns += 1
+            continue
+
         if row.get("type") != "assistant":
             continue
         message = row.get("message")
@@ -65,6 +84,7 @@ with open(path, "r", encoding="utf-8", errors="replace") as f:
         cache_creation += int(usage.get("cache_creation_input_tokens") or 0)
 
 print(json.dumps({
+    "turns": turns,
     "responses": responses,
     "input": input_tokens + cache_read + cache_creation,
     "output": output_tokens,
@@ -74,6 +94,7 @@ print(json.dumps({
 
 /** What the child printed, before it is turned into the pane's figures. */
 export type TranscriptSum = {
+  turns: number
   responses: number
   input: number
   output: number
@@ -95,6 +116,7 @@ function parseSum(stdout: string): TranscriptSum | null {
     typeof field === 'number' && Number.isFinite(field) ? field : 0
 
   return {
+    turns: number(value.turns),
     responses: number(value.responses),
     input: number(value.input),
     output: number(value.output),
@@ -152,14 +174,18 @@ export function parseTranscriptSum(exitCode: number, stdout: string): Transcript
  */
 export function totalsFrom(
   sum: TranscriptSum,
-  measuredTurns: number,
-  measuredSteps: number,
   averages: { ttftMs: number | null; tps: number | null },
   contextPercent: number | null,
+  measuredSteps: number | null = null,
 ): SessionTotals {
   return {
-    turns: measuredTurns,
-    steps: measuredSteps,
+    // The transcript's own count, so the turns and the tokens beside them cover
+    // the same history. The mod's running count only knows the turns it happened
+    // to see, and pairing that with the file's token total read as `1 轮 500M`.
+    turns: sum.turns,
+    // Steps are not in the file: one model call per response, which is what a
+    // step is, so the responses are the steps the session ran.
+    steps: measuredSteps ?? sum.responses,
     ttftMs: averages.ttftMs,
     tps: averages.tps,
     outputTokens: sum.output,

@@ -441,10 +441,9 @@ export const register: Register = on => {
         ? averaged
         : totalsFrom(
             sum,
-            averaged.turns,
-            averaged.steps,
             { ttftMs: averaged.ttftMs, tps: averaged.tps },
             usage.context.percent ?? null,
+            null,
           )
 
     // Only clear it if it is still this turn: a step that arrived while the
@@ -560,35 +559,87 @@ export const register: Register = on => {
           ? held
           : totalsFrom(
               sum,
-              held?.turns ?? 0,
-              held?.steps ?? 0,
               { ttftMs: held?.ttftMs ?? null, tps: held?.tps ?? null },
               usage.context.percent ?? null,
+              // The turn in flight has run steps the file may not hold yet.
+              (held?.steps ?? 0) + (live?.steps ?? 0) > sum.responses
+                ? (held?.steps ?? 0) + (live?.steps ?? 0)
+                : null,
             )
+
+      // While a turn runs, the file lags it: a response's row is written as the
+      // response settles, so what the turn has done so far is only in `live`.
+      // Without this the totals sat still for the whole of a long turn.
+      //
+      // Only the part the file does not hold yet is added. The file is read a
+      // moment ago, and its last rows may already include some of this turn's
+      // responses; adding `live` whole would count those twice. Steps the file
+      // has are compared with the steps counted here, and the difference is what
+      // is still missing.
+      const running = live !== null && !live.isDone
+      const runningTps = running && live !== null ? measureOf(live, await $.clock.now()).tps : null
+      const liveWait = live?.firstWaitMs ?? null
+      const liveOut = live?.outputTokens ?? 0
+
+      // The session's rate is a weighted mean over stream time; the turn in
+      // flight joins it the same way, not as a plain replacement.
+      const sessionStreamMs =
+        all?.tps != null && all.tps > 0 ? (all.outputTokens / all.tps) * 1000 : 0
+      const liveStreamMs = runningTps != null && runningTps > 0 ? (liveOut / runningTps) * 1000 : 0
+      const mergedTps =
+        sessionStreamMs + liveStreamMs > 0
+          ? Math.round(
+              ((all!.outputTokens + liveOut) / ((sessionStreamMs + liveStreamMs) / 1000)) * 10,
+            ) / 10
+          : all?.tps ?? null
+      const waitedBefore = all?.ttftMs != null ? Math.round(all.ttftMs * all.turns) : 0
+      const mergedWait =
+        liveWait != null && all !== null
+          ? Math.round((waitedBefore + liveWait) / (all.turns + 1))
+          : all?.ttftMs ?? null
+
+      const heldSteps = all?.steps ?? 0
+      const liveSteps = live?.steps ?? 0
+      const missingSteps = Math.max(0, liveSteps - heldSteps)
+      const shown =
+        all === null || !running || missingSteps === 0
+          ? all
+          : {
+              ...all,
+              // A turn the file has not seen at all is still one turn.
+              turns: all.turns + (heldSteps === 0 ? 1 : 0),
+              steps: all.steps + missingSteps,
+              // The averages take the turn in flight in, so they move while it
+              // runs instead of waiting for it to end. Both are merged the way
+              // the session's own are: the wait by turn count, the rate by the
+              // stream time each was measured over.
+              ttftMs: mergedWait,
+              tps: mergedTps,
+            }
 
       // Nothing measured and nothing in the file: there is no total to draw,
       // and eight rows of dashes would say less than one line does.
-      if (all === null || (all.turns === 0 && all.outputTokens === 0 && all.inputTokens === 0)) {
+      if (shown === null || (shown.turns === 0 && shown.outputTokens === 0 && shown.inputTokens === 0)) {
         details = [['会话统计', '还没有可统计的数据', false]]
       } else {
         details = [
           // What was measured, in the order it was measured: how much ran, how
           // long the first token took, how fast the rest came.
-          ['轮次 / 步数', `${all.turns} 轮 ${all.steps} 步`, false],
-          ['首 token 平均', all.ttftMs === null ? '—' : msText(all.ttftMs), false],
-          ['平均输出速度', all.tps === null ? '—' : `${all.tps.toFixed(1)} tok/s`, true],
+          ['轮次 / 步数', `${shown.turns} 轮 ${shown.steps} 步`, false],
+          ['首 token 平均', shown.ttftMs === null ? '—' : msText(shown.ttftMs), false],
+          ['平均输出速度', shown.tps === null ? '—' : `${shown.tps.toFixed(1)} tok/s`, true],
           // Then the four figures that are all one thing — the session's tokens:
           // what went in, how much of that the cache served, what came out, and
           // what the whole traffic adds up to. Grouped, because read apart they
           // look like four unrelated numbers.
-          ['输入 token', tokText(all.inputTokens), false],
-          ['缓存读取', tokText(all.cacheReadTokens), false],
-          ['输出 token', tokText(all.outputTokens), false],
-          ['总 token', tokText(all.outputTokens + all.inputTokens), false],
+          ['输入 token', tokText(shown.inputTokens), false],
+          ['缓存读取', tokText(shown.cacheReadTokens), false],
+          ['输出 token', tokText(shown.outputTokens), false],
+          ['总 token', tokText(shown.outputTokens + shown.inputTokens), false],
           // The band above shows the turn's own hit; this one is the session's,
           // measured over every input token the whole transcript was answered
           // over — a token-weighted mean, so a long turn counts for more.
-          ['平均缓存命中', all.cacheHitPercent === null ? '—' : percentText(all.cacheHitPercent), true],
+          ['平均缓存命中', shown.cacheHitPercent === null ? '—' : percentText(shown.cacheHitPercent), true],
           ['上下文占用', usage.context.percent === undefined ? '—' : `${usage.context.percent}%`, false],
         ]
       }
