@@ -566,22 +566,39 @@ export const register: Register = on => {
         details = [['会话统计', '还没有可统计的数据']]
       } else {
         details = [
+          // What was measured, in the order it was measured: how much ran, how
+          // long the first token took, how fast the rest came.
           ['轮次 / 步数', `${all.turns} 轮 ${all.steps} 步`],
           ['首 token 平均', all.ttftMs === null ? '—' : msText(all.ttftMs)],
           ['平均输出速度', all.tps === null ? '—' : `${all.tps.toFixed(1)} tok/s`],
-          // The two parts first, then what they add up to: input is what every
-          // request was answered over (cached and uncached alike), output is
-          // what the model wrote, and the total is the session's whole traffic.
-          ['输出 token', tokText(all.outputTokens)],
+          // Then the four figures that are all one thing — the session's tokens:
+          // what went in, how much of that the cache served, what came out, and
+          // what the whole traffic adds up to. Grouped, because read apart they
+          // look like four unrelated numbers.
           ['输入 token', tokText(all.inputTokens)],
-          ['总 token', tokText(all.outputTokens + all.inputTokens)],
           ['缓存读取', tokText(all.cacheReadTokens)],
+          ['输出 token', tokText(all.outputTokens)],
+          ['总 token', tokText(all.outputTokens + all.inputTokens)],
           // The band above shows the turn's own hit; this one is the session's,
           // measured over every input token the whole transcript was answered
           // over — a token-weighted mean, so a long turn counts for more.
           ['平均缓存命中', all.cacheHitPercent === null ? '—' : percentText(all.cacheHitPercent)],
           ['上下文占用', usage.context.percent === undefined ? '—' : `${usage.context.percent}%`],
         ]
+      }
+    }
+
+    // One column when the band is narrow, two when it can hold them: a 14-cell
+    // label column, a value column, and four cells between. Below that width
+    // the second column would wrap, which reads worse than a longer list.
+    const COLUMN_CELLS = 14 + 10 + 4 + 4
+    const columns: Array<Array<[string, string]>> = []
+    if (details.length > 0) {
+      if (e.props.bodyColumns >= COLUMN_CELLS * 2) {
+        const half = Math.ceil(details.length / 2)
+        columns.push(details.slice(0, half), details.slice(half))
+      } else {
+        columns.push(details)
       }
     }
 
@@ -603,23 +620,27 @@ export const register: Register = on => {
           />
         </Box>
         {/* Unfolded, the totals hang under the line behind a quote bar, inset
-            from it: one block, not eight loose rows. */}
+            from it: one block, not eight loose rows. Wide enough for two, they
+            take two — a single column of eight leaves half the band empty. */}
         {isOpen && (
           <Box
-            flexDirection="column"
             marginTop={1}
             paddingLeft={2}
             borderStyle="quote"
             borderColor="subtle"
           >
-            {details.map(([label, value]) => (
-              <Box key={label} gap={2}>
-                {/* One width for every label, so the values line up whatever
-                    the label's own length — CJK glyphs take two cells each. */}
-                <Box width={14}>
-                  <Text dimColor>{label}</Text>
-                </Box>
-                <Text>{value}</Text>
+            {columns.map((column, at) => (
+              <Box key={`column-${at}`} flexDirection="column" marginRight={4}>
+                {column.map(([label, value]) => (
+                  <Box key={label} gap={2}>
+                    {/* One width for every label, so the values line up whatever
+                        the label's own length — CJK glyphs take two cells each. */}
+                    <Box width={14}>
+                      <Text dimColor>{label}</Text>
+                    </Box>
+                    <Text>{value}</Text>
+                  </Box>
+                ))}
               </Box>
             ))}
           </Box>

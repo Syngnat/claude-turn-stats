@@ -422,6 +422,47 @@ test('a stored value of another shape draws nothing rather than throwing', async
   await ui.unmount()
 })
 
+test('a wide band lays the totals in two columns, a narrow one in one', async ($, on) => {
+  on(
+    'state.get',
+    holding(
+      { ttftMs: 800, tps: 40, outputTokens: 892, steps: 3, isLive: false, elapsedMs: 8000 },
+      { turns: 12, steps: 241, ttftMs: 2900, tps: 292, contextPercent: 31 },
+      true,
+    ),
+  )
+  usageOf(on)
+  transcriptSums(on, { responses: 218, input: 38_665_129, output: 180_562, cacheRead: 38_206_122 })
+  engineDraws(on)
+  await startSession($, on)
+
+  // However many columns it takes, every figure is drawn once: the layout moves
+  // them, it never drops one.
+  for (const bodyColumns of [80, 120] as const) {
+    const ui = await $.ui.mount({
+      ...BAND,
+      surface: 'desktop',
+      props: { ...BAND.props, bodyColumns },
+    })
+
+    for (const label of [
+      '轮次 / 步数',
+      '首 token 平均',
+      '平均输出速度',
+      '输出 token',
+      '输入 token',
+      '总 token',
+      '缓存读取',
+      '平均缓存命中',
+      '上下文占用',
+    ]) {
+      expect((await ui.find({ type: 'Text', text: label }))?.text).toBe(label)
+    }
+
+    await ui.unmount()
+  }
+})
+
 test('the band has one button, labelled for the fold it flips', async ($, on) => {
   on(
     'state.get',
