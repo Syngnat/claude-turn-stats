@@ -594,9 +594,23 @@ export const register: Register = on => {
     const COLUMN_CELLS = 14 + 10 + 4 + 4
     const columns: Array<Array<[string, string]>> = []
     if (details.length > 0) {
-      if (e.props.bodyColumns >= COLUMN_CELLS * 2) {
-        const half = Math.ceil(details.length / 2)
-        columns.push(details.slice(0, half), details.slice(half))
+      if (e.props.bodyColumns >= COLUMN_CELLS * 2 && details.length > 4) {
+        // Split by what each column is about, not at the halfway mark: the
+        // turn's pacing and the two whole-session figures on the left, every
+        // token count on the right. Splitting by count cut the token group in
+        // two and left one column taller than the other.
+        // `平均缓存命中` rides with them: it is a share of those tokens, and it
+        // keeps the two columns within one row of each other.
+        const tokenLabels = new Set([
+          '输入 token',
+          '缓存读取',
+          '输出 token',
+          '总 token',
+          '平均缓存命中',
+        ])
+        const left = details.filter(([label]) => !tokenLabels.has(label))
+        const right = details.filter(([label]) => tokenLabels.has(label))
+        columns.push(left, right)
       } else {
         columns.push(details)
       }
