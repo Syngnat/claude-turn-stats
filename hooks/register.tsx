@@ -57,6 +57,26 @@ function tokText(tokens: number): string {
  * thing with trailing zeros that measure nothing. A share with real fraction
  * keeps it — `98.81%`, never rounded up to a flat 99%.
  */
+/** Where the last turn's figures are kept between sessions, with whose they are. */
+const STORE_KEY = 'turn-stats.lastTurn'
+
+/**
+ * The last turn's figures as `$.store` holds them: the session they were
+ * measured in, and the value itself. A store entry that names another session
+ * is not this conversation's, and one written by an older version may hold any
+ * shape at all — both read as nothing here.
+ */
+type StoredTurn = { sessionId: string; turn: StepStats }
+
+function readStoredTurn(raw: unknown, sessionId: string | null): StepStats | null {
+  if (sessionId === null || raw === null || typeof raw !== 'object') return null
+
+  const held = raw as Partial<StoredTurn>
+  if (held.sessionId !== sessionId) return null
+
+  return normalizeTurn(held.turn)
+}
+
 function percentText(percent: number): string {
   const rounded = Math.round(percent * 100) / 100
 
@@ -267,10 +287,23 @@ export const register: Register = on => {
    */
   let transcriptPath: string | null = null
 
+  /**
+   * This session's id, kept so a figure stored by `$.store` can be told from
+   * one another session left there.
+   *
+   * `$.state` dies with the session, and the last turn's figures with it. The
+   * band remembering them across a restart is worth the extra step, but only
+   * for the same transcript: a session that resumed this one goes on with the
+   * same id, while `/clear` and a new conversation get a new one, and a figure
+   * measured elsewhere must not be drawn as this conversation's.
+   */
+  let sessionId: string | null = null
+
   on('session.start', async ($, e, next) => {
     // `$.session.id()` is the transcript file's name; `e.cwd` names its folder.
     const home = (await $.env.get('HOME')) ?? ''
     const id = await $.session.id()
+    sessionId = id
     transcriptPath = transcriptPathOf(home, e.cwd, id)
 
     await $.command.register({
@@ -409,6 +442,14 @@ export const register: Register = on => {
     await update($, last, () => done)
     await update($, totals, () => nextTotals)
 
+    // `$.state` ends with the session, so the same figure goes to `$.store`
+    // with the session it belongs to: a restart of this conversation finds it,
+    // another conversation's does not.
+    if (sessionId !== null) {
+      const stored: StoredTurn = { sessionId, turn: done }
+      await $.store.set(STORE_KEY, stored)
+    }
+
     return next(e)
   })
 
@@ -425,9 +466,20 @@ export const register: Register = on => {
 
     // The turn in flight, else the one that finished last. Both are read before
     // any clock call, so neither can be cleared out from under the drawing.
+    //
+    // `null` here is not a reason to draw nothing: a session that just started
+    // has no turn yet, and the way into the session totals must still be there —
+    // those come from the transcript and are there from the first response on.
     const turn = live
-    const view = turn !== null ? measureOf(turn, await $.clock.now()) : normalizeTurn(await read($, last))
-    if (view === null) return next(e)
+    let view = turn !== null ? measureOf(turn, await $.clock.now()) : normalizeTurn(await read($, last))
+
+    // A restart empties `$.state` while the conversation goes on. The last turn
+    // was also left in `$.store`, under this session's id, so the band can show
+    // it again instead of starting blank — and a figure another conversation
+    // left there is not this one's, so the id is checked before it is drawn.
+    if (view === null && sessionId !== null) {
+      view = readStoredTurn(await $.store.get(STORE_KEY), sessionId)
+    }
 
     const { Box, Button, Text } = $.ui.resolve(e)
     const parts: string[] = []
@@ -435,32 +487,36 @@ export const register: Register = on => {
     // Each number says what it measures, so the row reads as a sentence rather
     // than three bare figures. The labels are the whole point: `2.2s / 247.2 /
     // 304` alone does not say which is the wait, the speed and the size.
-    if (view.ttftMs === null || view.ttftMs === undefined) {
-      // No token yet: the time so far *is* the wait, still running, so it is
-      // said in one breath rather than as a placeholder plus a stray timer.
-      if (view.isLive !== true) return next(e)
-
-      parts.push(`首 token 等待中 ${msText(view.elapsedMs ?? 0)}`)
-    } else {
-      parts.push(`首 token 等待 ${msText(view.ttftMs)}`)
-      if (view.isLive === true) {
-        parts.push(`已耗时 ${msText(view.elapsedMs ?? 0)}`)
-      } else if (view.tps !== null && view.tps !== undefined && view.outputTokens != null) {
-        parts.push(`本轮生成速度 ${view.tps.toFixed(1)} tok/s`)
-        parts.push(`本轮共 ${tokText(view.outputTokens)} tok`)
-        if (view.cacheHitPercent !== null && view.cacheHitPercent !== undefined) {
-          parts.push(`本轮缓存命中 ${percentText(view.cacheHitPercent)}`)
+    if (view !== null) {
+      if (view.ttftMs === null || view.ttftMs === undefined) {
+        // No token yet: the time so far *is* the wait, still running, so it is
+        // said in one breath rather than as a placeholder plus a stray timer.
+        if (view.isLive === true) {
+          parts.push(`首 token 等待中 ${msText(view.elapsedMs ?? 0)}`)
         }
-        // Left out rather than drawn as `undefined` when the value predates it.
-        if (view.steps !== undefined && view.steps > 0) {
-          parts.push(`${view.steps} 步`)
+      } else {
+        parts.push(`首 token 等待 ${msText(view.ttftMs)}`)
+        if (view.isLive === true) {
+          parts.push(`已耗时 ${msText(view.elapsedMs ?? 0)}`)
+        } else if (view.tps !== null && view.tps !== undefined && view.outputTokens != null) {
+          parts.push(`本轮生成速度 ${view.tps.toFixed(1)} tok/s`)
+          parts.push(`本轮共 ${tokText(view.outputTokens)} tok`)
+          if (view.cacheHitPercent !== null && view.cacheHitPercent !== undefined) {
+            parts.push(`本轮缓存命中 ${percentText(view.cacheHitPercent)}`)
+          }
+          // Left out rather than drawn as `undefined` when the value predates it.
+          if (view.steps !== undefined && view.steps > 0) {
+            parts.push(`${view.steps} 步`)
+          }
         }
       }
     }
 
-    // Nothing to say yet — the request has gone out but no token has come
-    // back, so there is neither a wait to report nor a rate. Draw nothing.
-    if (parts.length === 0) return next(e)
+    // Nothing measured and nothing to say about this turn — but the session's
+    // own totals may still be there, so the row is drawn with the button alone.
+    if (parts.length === 0) {
+      parts.push('尚未测量到本轮数据')
+    }
 
     const isOpen = await read($, isExpanded)
 

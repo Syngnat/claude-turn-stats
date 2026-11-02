@@ -2,6 +2,9 @@ import { expect, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 
+/** The id this test session owns: what the store's entries are filed under. */
+const SESSION_ID = '11112222-3333-4444-5555-666677778888'
+
 const BAND = {
   plugin: 'turn-stats',
   component: 'AbovePrompt',
@@ -29,6 +32,11 @@ function holding(stats: unknown, sessionTotals: unknown = null, isExpanded = fal
 
     return { value: { value: byKey[e.key] ?? undefined, version: 1 } }
   }
+}
+
+/** Answers `$.store.get` with what a restart left behind, for the id given. */
+function storeHolds(on: On, sessionId: string, turn: unknown) {
+  on('store.get', () => ({ value: { sessionId, turn } }))
 }
 
 /** The engine's own answer for `$.session.usage`, as the pane reads it. */
@@ -65,7 +73,7 @@ function transcriptSums(on: On, sum: unknown) {
  * totals. Answers the calls `session.start` makes on the way.
  */
 async function startSession($: Engine, on: On) {
-  on('session.id', () => ({ value: '11112222-3333-4444-5555-666677778888' }))
+  on('session.id', () => ({ value: SESSION_ID }))
   on('env.get', () => ({ value: '/Users/someone' }))
   on('command.register', () => ({ value: { command: 'turn-stats' } }))
 
@@ -83,14 +91,63 @@ function engineDraws(on: On) {
   })
 }
 
-test('the band is empty until a turn has been measured', async ($, on) => {
+test('before any turn, the band still offers the session totals', async ($, on) => {
+  // A session that just started, or one restarted: `last` is gone with the old
+  // session's state, but the transcript still holds the totals, so the way in
+  // must stay. Drawing nothing here hid the button until a turn had run.
   on('state.get', holding(null))
   engineDraws(on)
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
 
   expect(await ui.find({ type: 'Text', text: /首 token|生成速度/ })).toBeUndefined()
-  expect((await ui.find({ type: 'Text', text: 'engine' }))?.text).toBe('engine')
+  expect((await ui.find({ type: 'Text', text: '尚未测量到本轮数据' }))?.text).toBe('尚未测量到本轮数据')
+  expect((await ui.find({ type: 'Button' }))?.text).toBe('会话统计')
+  await ui.unmount()
+})
+
+test('a restart shows the last turn again, from the store', async ($, on) => {
+  // `$.state` is empty after a restart; the same figures wait in `$.store`,
+  // filed under this session's id, so the band is not blank.
+  on('state.get', holding(null))
+  storeHolds(on, SESSION_ID, { ttftMs: 1900, tps: 607.3, outputTokens: 13400, steps: 26, isLive: false, elapsedMs: 24000 })
+  engineDraws(on)
+  await startSession($, on)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+  const row = await ui.find({ type: 'Text', text: /首 token/ })
+  expect(row?.text).toContain('首 token 等待 1.9s')
+  expect(row?.text).toContain('本轮生成速度 607.3 tok/s')
+  await ui.unmount()
+})
+
+test('a figure another session stored is not drawn as this one’s', async ($, on) => {
+  // `$.store` is shared by every conversation on the machine. Only the one
+  // that wrote a figure may show it again.
+  on('state.get', holding(null))
+  storeHolds(on, 'some-other-session-id', { ttftMs: 1900, tps: 607.3, outputTokens: 13400, steps: 26, isLive: false, elapsedMs: 24000 })
+  engineDraws(on)
+  await startSession($, on)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+  expect(await ui.find({ type: 'Text', text: /首 token/ })).toBeUndefined()
+  expect((await ui.find({ type: 'Text', text: '尚未测量到本轮数据' }))?.text).toBe('尚未测量到本轮数据')
+  await ui.unmount()
+})
+
+test('what the state holds wins over an older figure in the store', async ($, on) => {
+  on('state.get', holding({ ttftMs: 500, tps: 100, outputTokens: 200, steps: 1, isLive: false, elapsedMs: 2500 }))
+  storeHolds(on, SESSION_ID, { ttftMs: 1900, tps: 607.3, outputTokens: 13400, steps: 26, isLive: false, elapsedMs: 24000 })
+  engineDraws(on)
+  await startSession($, on)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+  const row = await ui.find({ type: 'Text', text: /首 token/ })
+  expect(row?.text).toContain('首 token 等待 500ms')
+  expect(row?.text).not.toContain('1.9s')
   await ui.unmount()
 })
 
