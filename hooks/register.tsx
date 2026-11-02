@@ -495,31 +495,35 @@ export const register: Register = on => {
     }
 
     const { Box, Button, Text } = $.ui.resolve(e)
-    const parts: string[] = []
 
-    // Each number says what it measures, so the row reads as a sentence rather
-    // than three bare figures. The labels are the whole point: `2.2s / 247.2 /
-    // 304` alone does not say which is the wait, the speed and the size.
+    // Each part says what it measures, so the row reads as a sentence rather
+    // than three bare figures. One part per segment, each knowing whether it is
+    // one of the two read first — those draw in the accent colour here as well
+    // as in the fold, so the same figure looks the same in both places.
+    type Part = { text: string; isKey: boolean }
+    const parts: Part[] = []
+    const add = (text: string, isKey = false) => parts.push({ text, isKey })
+
     if (view !== null) {
       if (view.ttftMs === null || view.ttftMs === undefined) {
         // No token yet: the time so far *is* the wait, still running, so it is
         // said in one breath rather than as a placeholder plus a stray timer.
         if (view.isLive === true) {
-          parts.push(`首 token 等待中 ${msText(view.elapsedMs ?? 0)}`)
+          add(`首 token 等待中 ${msText(view.elapsedMs ?? 0)}`)
         }
       } else {
-        parts.push(`首 token 等待 ${msText(view.ttftMs)}`)
+        add(`首 token 等待 ${msText(view.ttftMs)}`)
         if (view.isLive === true) {
-          parts.push(`已耗时 ${msText(view.elapsedMs ?? 0)}`)
+          add(`已耗时 ${msText(view.elapsedMs ?? 0)}`)
         } else if (view.tps !== null && view.tps !== undefined && view.outputTokens != null) {
-          parts.push(`本轮生成速度 ${view.tps.toFixed(1)} tok/s`)
-          parts.push(`本轮共 ${tokText(view.outputTokens)} tok`)
+          add(`本轮生成速度 ${view.tps.toFixed(1)} tok/s`, true)
+          add(`本轮共 ${tokText(view.outputTokens)} tok`)
           if (view.cacheHitPercent !== null && view.cacheHitPercent !== undefined) {
-            parts.push(`本轮缓存命中 ${percentText(view.cacheHitPercent)}`)
+            add(`本轮缓存命中 ${percentText(view.cacheHitPercent)}`, true)
           }
           // Left out rather than drawn as `undefined` when the value predates it.
           if (view.steps !== undefined && view.steps > 0) {
-            parts.push(`${view.steps} 步`)
+            add(`${view.steps} 步`)
           }
         }
       }
@@ -528,7 +532,7 @@ export const register: Register = on => {
     // Nothing measured and nothing to say about this turn — but the session's
     // own totals may still be there, so the row is drawn with the button alone.
     if (parts.length === 0) {
-      parts.push('尚未测量到本轮数据')
+      add('尚未测量到本轮数据')
     }
 
     const isOpen = await read($, isExpanded)
@@ -625,7 +629,11 @@ export const register: Register = on => {
         <Box gap={1}>
           <Text color="claude">⚡</Text>
           <Box flexGrow={1}>
-            <Text color="subtle">{parts.join(' · ')}</Text>
+            {parts.map((part, at) => (
+              <Text key={`part-${at}`} color={part.isKey ? 'claude' : 'subtle'} bold={part.isKey}>
+                {at === 0 ? part.text : ` · ${part.text}`}
+              </Text>
+            ))}
           </Box>
           <Button
             key="details"

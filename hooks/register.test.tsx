@@ -91,6 +91,18 @@ function engineDraws(on: On) {
   })
 }
 
+
+/**
+ * The band's turn line, joined back into one string.
+ *
+ * Each segment is its own `Text` now — the two figures read first are drawn in
+ * the accent colour — so a single element no longer holds the whole line.
+ */
+async function turnLine(ui: { findAll: (q: { type: 'Text' }) => Promise<Array<{ text: string }>> }) {
+  const texts = await ui.findAll({ type: 'Text' })
+  return texts.map(one => one.text).join(' ')
+}
+
 test('before any turn, the band still offers the session totals', async ($, on) => {
   // A session that just started, or one restarted: `last` is gone with the old
   // session's state, but the transcript still holds the totals, so the way in
@@ -116,7 +128,7 @@ test('a restart shows the last turn again, from the store', async ($, on) => {
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
 
-  const row = await ui.find({ type: 'Text', text: /首 token/ })
+  const row = { text: await turnLine(ui) }
   expect(row?.text).toContain('首 token 等待 1.9s')
   expect(row?.text).toContain('本轮生成速度 607.3 tok/s')
   await ui.unmount()
@@ -183,7 +195,7 @@ test('what the state holds wins over an older figure in the store', async ($, on
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
 
-  const row = await ui.find({ type: 'Text', text: /首 token/ })
+  const row = { text: await turnLine(ui) }
   expect(row?.text).toContain('首 token 等待 500ms')
   expect(row?.text).not.toContain('1.9s')
   await ui.unmount()
@@ -197,8 +209,10 @@ test('a value stored before `steps` existed still draws, without it', async ($, 
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
 
-  const row = await ui.find({ type: 'Text', text: /首 token/ })
-  expect(row?.text).toBe('首 token 等待 995ms · 本轮生成速度 199.5 tok/s · 本轮共 570 tok')
+  const row = { text: await turnLine(ui) }
+  expect(row?.text).toContain('首 token 等待 995ms')
+  expect(row?.text).toContain('本轮生成速度 199.5 tok/s')
+  expect(row?.text).toContain('本轮共 570 tok')
   expect(row?.text).not.toContain('undefined')
   await ui.unmount()
 })
@@ -220,8 +234,8 @@ test('a turn waiting on its first token says so in one line, no placeholder', as
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
 
   // One sentence, no `…` placeholder and no second bare timer beside it.
-  const row = await ui.find({ type: 'Text', text: /首 token/ })
-  expect(row?.text).toBe('首 token 等待中 1.0s')
+  const row = { text: await turnLine(ui) }
+  expect(row?.text).toContain('首 token 等待中 1.0s')
   expect(await ui.find({ type: 'Text', text: /\.\.\./ })).toBeUndefined()
   await ui.unmount()
 })
@@ -246,7 +260,7 @@ test('the band reports the turn as a whole, its own cache hit included', async (
 
     // Every number carries the words that say what it measures, and the row
     // says whose numbers these are: the turn's, not one request's.
-    const row = await ui.find({ type: 'Text', text: /首 token/ })
+    const row = { text: await turnLine(ui) }
     expect(row?.text).toContain('首 token 等待 820ms')
     expect(row?.text).toContain('本轮生成速度 47.5 tok/s')
     expect(row?.text).toContain('本轮共 892 tok')
@@ -276,7 +290,7 @@ test('a share with a fraction keeps it, to two decimals', async ($, on) => {
   engineDraws(on)
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  const row = await ui.find({ type: 'Text', text: /本轮缓存命中/ })
+  const row = { text: await turnLine(ui) }
 
   expect(row?.text).toContain('本轮缓存命中 99.87%')
   await ui.unmount()
@@ -298,7 +312,7 @@ test('a whole percent carries no decimals at all', async ($, on) => {
   engineDraws(on)
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  const row = await ui.find({ type: 'Text', text: /本轮缓存命中/ })
+  const row = { text: await turnLine(ui) }
 
   // No padded zeros: `100%`, not `100.00%`.
   expect(row?.text).toContain('本轮缓存命中 100%')
@@ -322,7 +336,7 @@ test('a one-decimal share keeps its one decimal, not two', async ($, on) => {
   engineDraws(on)
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  const row = await ui.find({ type: 'Text', text: /本轮缓存命中/ })
+  const row = { text: await turnLine(ui) }
 
   expect(row?.text).toContain('本轮缓存命中 99.9%')
   expect(row?.text).not.toContain('99.90%')
@@ -338,7 +352,7 @@ test('a turn stored before the cache figure existed leaves it out', async ($, on
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
 
-  const row = await ui.find({ type: 'Text', text: /首 token/ })
+  const row = { text: await turnLine(ui) }
   expect(row?.text).not.toContain('缓存')
   expect(row?.text).not.toContain('undefined')
   await ui.unmount()
@@ -360,7 +374,7 @@ test('a turn still running shows the wait, not a rate', async ($, on) => {
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
 
-  const row = await ui.find({ type: 'Text', text: /首 token/ })
+  const row = { text: await turnLine(ui) }
   expect(row?.text).toContain('首 token 等待 1.2s')
   expect(row?.text).toContain('已耗时 2.4s')
   expect(row?.text).not.toContain('生成速度')
@@ -403,7 +417,7 @@ test('a value left under an old shape tag draws its inside, not undefined', asyn
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
 
-  const row = await ui.find({ type: 'Text', text: /首 token/ })
+  const row = { text: await turnLine(ui) }
   expect(row?.text).toContain('本轮生成速度 47.5 tok/s')
   expect(row?.text).not.toContain('undefined')
   await ui.unmount()
@@ -490,6 +504,40 @@ test('the two figures read first are drawn in the accent colour, the rest dim', 
   const turns = await ui.find({ type: 'Text', text: '轮次 / 步数' })
   expect(turns?.props.dimColor).toBe(true)
   expect(turns?.props.color).toBeUndefined()
+
+  await ui.unmount()
+})
+
+
+test('the turn line colours the same two figures as the fold', async ($, on) => {
+  on(
+    'state.get',
+    holding({
+      ttftMs: 820,
+      tps: 47.5,
+      outputTokens: 892,
+      cacheHitPercent: 87,
+      steps: 3,
+      isLive: false,
+      elapsedMs: 8400,
+    }),
+  )
+  engineDraws(on)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+  const speed = await ui.find({ type: 'Text', text: /本轮生成速度/ })
+  expect(speed?.props.color).toBe('claude')
+  expect(speed?.props.bold).toBe(true)
+
+  const hit = await ui.find({ type: 'Text', text: /本轮缓存命中/ })
+  expect(hit?.props.color).toBe('claude')
+  expect(hit?.props.bold).toBe(true)
+
+  // A figure that is not one of the two stays in the ordinary subtle colour.
+  const wait = await ui.find({ type: 'Text', text: /首 token 等待/ })
+  expect(wait?.props.color).toBe('subtle')
+  expect(wait?.props.bold).toBe(false)
 
   await ui.unmount()
 })
