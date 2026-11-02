@@ -1,5 +1,6 @@
 {
   "name": "claude-turn-stats",
+  "description": "A Claude Code mod that shows first-token latency, output rate and token totals above the prompt.",
   "owner": { "name": "Syngnat" },
   "plugins": [{ "name": "turn-stats", "source": "./" }]
 }
