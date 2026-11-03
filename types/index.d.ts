@@ -6,18 +6,32 @@
  *
  * `ttftMs` is the first step's wait from its request going out to the first
  * piece of the answer — the wait the person sat through; `null` until that
- * piece arrives. `tps` is the turn's output tokens over its whole stream time,
- * every step's stream summed and the first-token waits left out, so the wait is
- * not counted twice. `outputTokens` is what that rate was taken over, `steps`
- * how many model requests the turn made, `elapsedMs` how long the turn ran,
- * and `isLive` whether it is still running.
+ * piece arrives.
+ *
+ * Two rates are kept, because they answer different questions:
+ *
+ * - `tps` is how fast the model wrote: output tokens over the time pieces were
+ *   arriving, measured in the stream. On a local model this reaches hundreds.
+ * - `settledTps` is how fast the turn got its work done: output tokens over the
+ *   time between one response settling and the next, read from the transcript.
+ *   It is what the session actually delivered per second, waits included.
+ *
+ * They differ by the network and framework overhead around the model, so both
+ * are shown rather than one standing in for the other.
+ *
+ * `outputTokens` is what both rates were taken over, `steps` how many model
+ * requests the turn made, `elapsedMs` how long the turn ran, and `isLive`
+ * whether it is still running.
  *
  * Every field is optional on read: a value this mod wrote in an earlier version
  * is still in `$.state`, and a drawing hook that trusted it would throw.
  */
 export type StepStats = {
   ttftMs?: number | null
+  /** Output rate while the model was writing, from the stream. */
   tps?: number | null
+  /** Output rate over the whole turn's settling time, from the transcript. */
+  settledTps?: number | null
   outputTokens?: number | null
   /** The share of this turn's input tokens the prompt cache served, 0 to 100. */
   cacheHitPercent?: number | null
@@ -39,7 +53,10 @@ export type SessionTotals = {
   turns: number
   steps: number
   ttftMs: number | null
+  /** Mean of the turns' model rates, weighted by what each produced. */
   tps: number | null
+  /** The same mean over the turns' end-to-end rates, read from the transcript. */
+  settledTps?: number | null
   outputTokens: number
   inputTokens: number
   cacheReadTokens: number

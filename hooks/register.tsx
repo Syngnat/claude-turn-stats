@@ -215,6 +215,7 @@ function measureOf(turn: Live, now: number): StepStats {
 
   return {
     ttftMs: turn.firstWaitMs === null ? null : Math.round(turn.firstWaitMs),
+    // The model's own rate, from the stream window.
     tps: tps === null ? null : Math.round(tps * 10) / 10,
     outputTokens: turn.outputTokens > 0 ? turn.outputTokens : null,
     // Kept to two decimals rather than a whole percent: a session that hits the
@@ -254,6 +255,7 @@ function normalizeTurn(raw: unknown): StepStats | null {
   return {
     ttftMs: finite(value.ttftMs),
     tps: finite(value.tps),
+    settledTps: finite(value.settledTps),
     outputTokens: finite(value.outputTokens),
     cacheHitPercent: finite(value.cacheHitPercent),
     steps: finite(value.steps) ?? undefined,
@@ -279,6 +281,7 @@ function normalizeTotals(raw: unknown): SessionTotals | null {
     steps: finite(value.steps) ?? 0,
     ttftMs: finite(value.ttftMs),
     tps: finite(value.tps),
+    settledTps: finite(value.settledTps),
     outputTokens: finite(value.outputTokens) ?? 0,
     inputTokens: finite(value.inputTokens) ?? 0,
     cacheReadTokens: finite(value.cacheReadTokens) ?? 0,
@@ -577,13 +580,16 @@ export const register: Register = on => {
         }
       } else {
         add(`首 token 等待 ${msText(view.ttftMs)}`)
-        // A local model really does reach hundreds of tokens a second, and the
-        // stream window is the only thing that can show it while the turn runs.
-        // `rateOf` has already fallen back to the turn's own elapsed time when
-        // the window is impossible, so whatever arrives here is a rate that can
-        // have happened — no need to hold it back until the turn ends.
+        // Two rates, side by side and named apart. The first is the model's own
+        // — hundreds of tokens a second on a local host — and is what tells a
+        // fast model from a slow one. The second is what the turn actually got
+        // done per second, the network and the tool waits included. Reporting
+        // only one of them answered the other question wrongly.
         if (view.tps !== null && view.tps !== undefined) {
-          add(`本轮生成速度 ${view.tps.toFixed(1)} tok/s`, true)
+          add(`模型 ${view.tps.toFixed(1)} tok/s`, true)
+        }
+        if (view.settledTps !== null && view.settledTps !== undefined) {
+          add(`端到端 ${view.settledTps.toFixed(1)} tok/s`, true)
         }
         // The size and the cache share are only final once the turn is: while it
         // runs they are a running tally, so they are named as one.
@@ -649,7 +655,10 @@ export const register: Register = on => {
                 ? (held?.steps ?? 0) + (live?.steps ?? 0)
                 : null,
             )
-      const measured = settled !== null ? { ...all!, tps: settled } : all
+      // The transcript's rate is kept beside the stream's, not in place of it:
+      // one says how fast the model wrote, the other how fast the turn got its
+      // work done. Overwriting the first with the second hid the model's speed.
+      const measured = settled !== null ? { ...all!, settledTps: settled } : all
 
       // While a turn runs, the file lags it: a response's row is written as the
       // response settles, so what the turn has done so far is only in `live`.
@@ -734,7 +743,9 @@ export const register: Register = on => {
           // long the first token took, how fast the rest came.
           ['轮次 / 步数', `${shown.turns} 轮 ${shown.steps} 步`, false],
           ['首 token 平均', shown.ttftMs === null ? '—' : msText(shown.ttftMs), false],
-          ['平均输出速度', shown.tps === null ? '—' : `${shown.tps.toFixed(1)} tok/s`, true],
+          // The model's rate and the turn's, the same pair the line above shows.
+          ['模型速度', shown.tps == null ? '—' : `${shown.tps.toFixed(1)} tok/s`, true],
+          ['端到端速度', shown.settledTps == null ? '—' : `${shown.settledTps.toFixed(1)} tok/s`, true],
           // Then the four figures that are all one thing — the session's tokens:
           // what went in, how much of that the cache served, what came out, and
           // what the whole traffic adds up to. Grouped, because read apart they

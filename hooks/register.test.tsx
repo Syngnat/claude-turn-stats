@@ -131,7 +131,7 @@ test('a restart shows the last turn again, from the store', async ($, on) => {
 
   const row = { text: await turnLine(ui) }
   expect(row?.text).toContain('首 token 等待 1.9s')
-  expect(row?.text).toContain('本轮生成速度 607.3 tok/s')
+  expect(row?.text).toContain('模型 607.3 tok/s')
   await ui.unmount()
 })
 
@@ -213,7 +213,7 @@ test('a value stored before `steps` existed still draws, without it', async ($, 
 
   const row = { text: await turnLine(ui) }
   expect(row?.text).toContain('首 token 等待 995ms')
-  expect(row?.text).toContain('本轮生成速度 199.5 tok/s')
+  expect(row?.text).toContain('模型 199.5 tok/s')
   expect(row?.text).toContain('本轮共 570 tok')
   expect(row?.text).not.toContain('undefined')
   await ui.unmount()
@@ -264,7 +264,7 @@ test('the band reports the turn as a whole, its own cache hit included', async (
     // says whose numbers these are: the turn's, not one request's.
     const row = { text: await turnLine(ui) }
     expect(row?.text).toContain('首 token 等待 820ms')
-    expect(row?.text).toContain('本轮生成速度 47.5 tok/s')
+    expect(row?.text).toContain('模型 47.5 tok/s')
     expect(row?.text).toContain('本轮共 892 tok')
     // The turn's own hit, beside the session's, which only the fold shows.
     expect(row?.text).toContain('本轮缓存命中 87%')
@@ -420,7 +420,7 @@ test('a value left under an old shape tag draws its inside, not undefined', asyn
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
 
   const row = { text: await turnLine(ui) }
-  expect(row?.text).toContain('本轮生成速度 47.5 tok/s')
+  expect(row?.text).toContain('模型 47.5 tok/s')
   expect(row?.text).not.toContain('undefined')
   await ui.unmount()
 })
@@ -464,7 +464,7 @@ test('a wide band lays the totals in two columns, a narrow one in one', async ($
     for (const label of [
       '轮次 / 步数',
       '首 token 平均',
-      '平均输出速度',
+      '模型速度',
       '输出 token',
       '输入 token',
       '总 token',
@@ -495,7 +495,7 @@ test('the two figures read first are drawn in the accent colour, the rest dim', 
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
 
-  const speed = await ui.find({ type: 'Text', text: '平均输出速度' })
+  const speed = await ui.find({ type: 'Text', text: '模型速度' })
   expect(speed?.props.color).toBe('claude')
   expect(speed?.props.dimColor).toBe(false)
 
@@ -528,7 +528,7 @@ test('the turn line colours the same two figures as the fold', async ($, on) => 
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
 
-  const speed = await ui.find({ type: 'Text', text: /本轮生成速度/ })
+  const speed = await ui.find({ type: 'Text', text: /模型 .* tok\/s/ })
   expect(speed?.props.color).toBe('claude')
   expect(speed?.props.bold).toBe(true)
 
@@ -583,7 +583,7 @@ test('a running turn still feeds the averages when the file has caught up', asyn
 
   // No turn is running in this test, so the averages are the stored ones — the
   // point is that they are drawn at all, never as a bare dash beside a total.
-  expect((await ui.find({ type: 'Text', text: /平均输出速度/ }))?.text).toBe('平均输出速度')
+  expect((await ui.find({ type: 'Text', text: /模型速度/ }))?.text).toBe('模型速度')
 
   await ui.unmount()
 })
@@ -611,7 +611,7 @@ test('a running turn shows its rate, its size and its cache share', async ($, on
 
   const line = await turnLine(ui)
   expect(line).toContain('首 token 等待 3.5s')
-  expect(line).toContain('本轮生成速度 480.4 tok/s')
+  expect(line).toContain('模型 480.4 tok/s')
   expect(line).toContain('已生成 21.6k tok')
   expect(line).toContain('本轮缓存命中 91.73%')
   expect(line).toContain('已耗时 119.1s')
@@ -652,7 +652,7 @@ test('unfolded, the band totals the whole transcript under the turn line', async
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
 
   // The turn's own line is still there above the totals.
-  expect((await ui.find({ type: 'Text', text: /本轮生成速度/ }))?.text).toContain('本轮生成速度 40.0 tok/s')
+  expect((await ui.find({ type: 'Text', text: /模型 .* tok\/s/ }))?.text).toContain('模型 40.0 tok/s')
 
   expect((await ui.find({ type: 'Text', text: /12 轮 241 步/ }))?.text).toBe('12 轮 241 步')
   expect((await ui.find({ type: 'Text', text: /首 token 平均/ }))?.text).toBe('首 token 平均')
