@@ -587,6 +587,35 @@ test('a running turn still feeds the averages when the file has caught up', asyn
   await ui.unmount()
 })
 
+test('a running turn shows its rate, not only the time it has taken', async ($, on) => {
+  // The rate is the figure worth watching during a long turn; hiding it until
+  // the turn ended left the line reading `已耗时 1145.5s` and nothing else.
+  on(
+    'state.get',
+    holding({
+      ttftMs: 3500,
+      tps: 480.4,
+      outputTokens: 21600,
+      cacheHitPercent: 91.73,
+      steps: 15,
+      isLive: true,
+      elapsedMs: 119100,
+    }),
+  )
+  engineDraws(on)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+  const line = await turnLine(ui)
+  expect(line).toContain('本轮生成速度 480.4 tok/s')
+  expect(line).toContain('已生成 21.6k tok')
+  // The cache share is a running figure as well, not one held back for the end.
+  expect(line).toContain('本轮缓存命中')
+  expect(line).toContain('已耗时 119.1s')
+
+  await ui.unmount()
+})
+
 test('the band has one button, labelled for the fold it flips', async ($, on) => {
   on(
     'state.get',

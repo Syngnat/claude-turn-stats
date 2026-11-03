@@ -512,18 +512,29 @@ export const register: Register = on => {
         }
       } else {
         add(`首 token 等待 ${msText(view.ttftMs)}`)
+        // Running or ended, a rate is a rate: it is taken from the first token
+        // to now while the stream goes on, and to its end once it stops. Leaving
+        // it out until the turn ended hid the one figure worth watching during a
+        // long turn — which is exactly when a person looks at it.
+        if (view.tps !== null && view.tps !== undefined) {
+          add(`本轮生成速度 ${view.tps.toFixed(1)} tok/s`, true)
+        }
+        // The size and the cache share are only final once the turn is: while it
+        // runs they are a running tally, so they are named as one.
+        if (view.outputTokens != null) {
+          add(view.isLive === true ? `已生成 ${tokText(view.outputTokens)} tok` : `本轮共 ${tokText(view.outputTokens)} tok`)
+        }
+        // The cache share is a running figure too: it moves as each response
+        // comes back, and it is one of the two worth watching mid-turn.
+        if (view.cacheHitPercent !== null && view.cacheHitPercent !== undefined) {
+          add(`本轮缓存命中 ${percentText(view.cacheHitPercent)}`, true)
+        }
         if (view.isLive === true) {
           add(`已耗时 ${msText(view.elapsedMs ?? 0)}`)
-        } else if (view.tps !== null && view.tps !== undefined && view.outputTokens != null) {
-          add(`本轮生成速度 ${view.tps.toFixed(1)} tok/s`, true)
-          add(`本轮共 ${tokText(view.outputTokens)} tok`)
-          if (view.cacheHitPercent !== null && view.cacheHitPercent !== undefined) {
-            add(`本轮缓存命中 ${percentText(view.cacheHitPercent)}`, true)
-          }
-          // Left out rather than drawn as `undefined` when the value predates it.
-          if (view.steps !== undefined && view.steps > 0) {
-            add(`${view.steps} 步`)
-          }
+        }
+        // Left out rather than drawn as `undefined` when the value predates it.
+        if (view.steps !== undefined && view.steps > 0) {
+          add(`${view.steps} 步`)
         }
       }
     }
