@@ -291,6 +291,11 @@ function normalizeTotals(raw: unknown): SessionTotals | null {
     cacheReadTokens: finite(value.cacheReadTokens) ?? 0,
     cacheHitPercent: finite(value.cacheHitPercent),
     contextPercent: finite(value.contextPercent),
+    waitedTurns: finite(value.waitedTurns) ?? undefined,
+    waitedMs: finite(value.waitedMs) ?? undefined,
+    ratedTurns: finite(value.ratedTurns) ?? undefined,
+    streamMs: finite(value.streamMs) ?? undefined,
+    ratedTokens: finite(value.ratedTokens) ?? undefined,
   }
 }
 
@@ -320,32 +325,48 @@ function addToTotals(
     contextPercent: null,
   }
 
+  // The means are taken over their own sums. `previous.turns` is the transcript's
+  // count of the whole session and says nothing about how many turns this mod sat
+  // through, so dividing by it (or deriving a duration from `outputTokens / tps`,
+  // which mixed the file's totals with this mod's rates) gave a figure in the
+  // thousands once a turn arrived with no rate to average in.
+  const waitedTurns = base.waitedTurns ?? 0
+  const waitedMs = base.waitedMs ?? 0
+  const ratedTurns = base.ratedTurns ?? 0
+  const streamMs = base.streamMs ?? 0
+  const ratedTokens = base.ratedTokens ?? 0
+
   const turnTps = turn.tps ?? null
   const turnOutput = turn.outputTokens ?? 0
   const turnStreamMs = turnTps !== null && turnTps > 0 ? (turnOutput / turnTps) * 1000 : 0
-
-  const outputTokens = base.outputTokens + turnOutput
-  const inputTokens = base.inputTokens + (live?.inputTokens ?? 0)
-  const cacheReadTokens = base.cacheReadTokens + (live?.cacheReadTokens ?? 0)
-  const previousStreamMs = base.tps !== null && base.outputTokens > 0 ? (base.outputTokens / base.tps) * 1000 : 0
+  const waited = turn.ttftMs ?? null
 
   // A turn with no first-token figure (aborted before any token) does not pull
-  // the average down; it simply is not one of the waits.
-  const waited = turn.ttftMs ?? null
-  const previousWaits = base.ttftMs === null ? 0 : Math.round(base.ttftMs * base.turns)
+  // the average down; it simply is not one of the waits. Same for a turn with no
+  // rate: it adds nothing to either sum.
+  const nextWaitedTurns = waited === null ? waitedTurns : waitedTurns + 1
+  const nextWaitedMs = waited === null ? waitedMs : waitedMs + waited
+  const nextRatedTurns = turnStreamMs > 0 ? ratedTurns + 1 : ratedTurns
+  const nextStreamMs = streamMs + turnStreamMs
+  const nextRatedTokens = ratedTokens + (turnStreamMs > 0 ? turnOutput : 0)
+
+  const inputTokens = base.inputTokens + (live?.inputTokens ?? 0)
+  const cacheReadTokens = base.cacheReadTokens + (live?.cacheReadTokens ?? 0)
 
   return {
     turns: base.turns + 1,
     steps: base.steps + (turn.steps ?? 0),
-    ttftMs:
-      waited === null
-        ? base.ttftMs
-        : Math.round((previousWaits + waited) / (base.turns + 1)),
+    ttftMs: nextWaitedTurns === 0 ? null : Math.round(nextWaitedMs / nextWaitedTurns),
     tps:
-      outputTokens > 0 && previousStreamMs + turnStreamMs > 0
-        ? Math.round((outputTokens / ((previousStreamMs + turnStreamMs) / 1000)) * 10) / 10
+      nextStreamMs > 0 && nextRatedTokens > 0
+        ? Math.round((nextRatedTokens / (nextStreamMs / 1000)) * 10) / 10
         : null,
-    outputTokens,
+    waitedTurns: nextWaitedTurns,
+    waitedMs: nextWaitedMs,
+    ratedTurns: nextRatedTurns,
+    streamMs: nextStreamMs,
+    ratedTokens: nextRatedTokens,
+    outputTokens: base.outputTokens + turnOutput,
     inputTokens,
     cacheReadTokens,
     cacheHitPercent:
@@ -353,6 +374,7 @@ function addToTotals(
     contextPercent: contextPercent ?? base.contextPercent,
   }
 }
+
 
 export const register: Register = on => {
   /**
@@ -519,7 +541,15 @@ export const register: Register = on => {
         ? averaged
         : totalsFrom(
             sum,
-            { ttftMs: averaged.ttftMs, tps: averaged.tps },
+            {
+              ttftMs: averaged.ttftMs,
+              tps: averaged.tps,
+              waitedTurns: averaged.waitedTurns,
+              waitedMs: averaged.waitedMs,
+              ratedTurns: averaged.ratedTurns,
+              streamMs: averaged.streamMs,
+              ratedTokens: averaged.ratedTokens,
+            },
             usage.context.percent ?? null,
             null,
           )
@@ -652,7 +682,15 @@ export const register: Register = on => {
           ? held
           : totalsFrom(
               sum,
-              { ttftMs: held?.ttftMs ?? null, tps: held?.tps ?? null },
+              {
+                ttftMs: held?.ttftMs ?? null,
+                tps: held?.tps ?? null,
+                waitedTurns: held?.waitedTurns,
+                waitedMs: held?.waitedMs,
+                ratedTurns: held?.ratedTurns,
+                streamMs: held?.streamMs,
+                ratedTokens: held?.ratedTokens,
+              },
               usage.context.percent ?? null,
               // The turn in flight has run steps the file may not hold yet.
               (held?.steps ?? 0) + (live?.steps ?? 0) > sum.responses

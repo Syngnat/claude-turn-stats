@@ -156,6 +156,13 @@ test('after a restart, the averages come back from the store, the counts from th
       cacheReadTokens: 60_600_000,
       cacheHitPercent: 99,
       contextPercent: 29,
+      // The sums the means are taken over survive the restart with them; without
+      // these the next turn would restart the average from zero.
+      waitedTurns: 7,
+      waitedMs: 19_600,
+      ratedTurns: 7,
+      streamMs: 486_600,
+      ratedTokens: 214_800,
     },
   )
   engineDraws(on)
@@ -650,6 +657,54 @@ test('the fold shows the session mean, not the last turn repeated', async ($, on
 
   // The fold's mean differs from the turn's own figure on the line above.
   expect((await ui.find({ type: 'Text', text: '180.2 tok/s' }))?.text).toBe('180.2 tok/s')
+
+  await ui.unmount()
+})
+
+test('the means are taken over their own sums, never over the file’s totals', async ($, on) => {
+  // A regression: the average rate was derived from `outputTokens / tps`, mixing
+  // the transcript's whole-session totals with this mod's own rates. When a turn
+  // arrived with no rate, the derived duration collapsed to zero and the next
+  // average read as 6600 tok/s against a real 369.
+  //
+  // Stored: 616.8k transcript tokens, and the mod's own mean over 2 turns. The
+  // fold must report that mean, not the transcript total over it.
+  on(
+    'state.get',
+    holding(
+      { ttftMs: 5900, tps: 369.2, outputTokens: 5000, steps: 3, isLive: false, elapsedMs: 20000 },
+      {
+        turns: 47,
+        steps: 1606,
+        ttftMs: 4200,
+        tps: 369.2,
+        outputTokens: 616_800,
+        inputTokens: 1_017_000_000,
+        cacheReadTokens: 963_900_000,
+        cacheHitPercent: 94.72,
+        contextPercent: 70,
+        // Two turns measured: 20 s of stream time for 7,384 tokens.
+        waitedTurns: 2,
+        waitedMs: 8400,
+        ratedTurns: 2,
+        streamMs: 20_000,
+        ratedTokens: 7384,
+      },
+      true,
+    ),
+  )
+  usageOf(on)
+  transcriptSums(on, { turns: 47, responses: 1606, input: 1_017_000_000, output: 616_800, cacheRead: 963_900_000 })
+  on('store.get', () => ({ value: undefined }))
+  engineDraws(on)
+  await startSession($, on)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+  // 7,384 tokens over 20 s is 369 tok/s — the mean, and nothing like 6600.
+  // The fold's value is the bare figure; the line above prefixes it with 模型.
+  expect((await ui.find({ type: 'Text', text: /^369\.2 tok\/s$/ }))?.text).toBe('369.2 tok/s')
+  expect(await ui.find({ type: 'Text', text: /6600/ })).toBeUndefined()
 
   await ui.unmount()
 })

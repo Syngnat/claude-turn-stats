@@ -40,11 +40,27 @@ export type StepStats = {
  * `contextPercent` how full the context window stands.
  */
 export type SessionTotals = {
+  /** The transcript's turn count — shown, and not what the means divide by. */
   turns: number
   steps: number
+  /** Mean wait over the turns this mod measured; see `waitedTurns`. */
   ttftMs: number | null
-  /** Mean of the turns' model rates, weighted by what each produced. */
+  /** Mean model rate over the turns this mod measured; see `streamMs`. */
   tps: number | null
+
+  /*
+   * The numbers the two means are taken over, kept as sums rather than as a
+   * running mean. `turns` and `steps` above are the transcript's own counts and
+   * cover the whole session; a mean cannot be divided by them, and deriving a
+   * duration from `outputTokens / tps` mixed the file's totals with this mod's
+   * rates — when `tps` was null the duration collapsed to zero and the next
+   * average read as 6600 tok/s.
+   */
+  waitedTurns?: number
+  waitedMs?: number
+  ratedTurns?: number
+  streamMs?: number
+  ratedTokens?: number
   outputTokens: number
   inputTokens: number
   cacheReadTokens: number

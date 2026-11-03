@@ -196,7 +196,15 @@ export function parseTranscriptSum(exitCode: number, stdout: string): Transcript
  */
 export function totalsFrom(
   sum: TranscriptSum,
-  averages: { ttftMs: number | null; tps: number | null },
+  averages: {
+    ttftMs: number | null
+    tps: number | null
+    waitedTurns?: number
+    waitedMs?: number
+    ratedTurns?: number
+    streamMs?: number
+    ratedTokens?: number
+  },
   contextPercent: number | null,
   measuredSteps: number | null = null,
 ): SessionTotals {
@@ -213,6 +221,14 @@ export function totalsFrom(
     // file cannot recover it (it holds when each response settled, not how long
     // the model took to write it), so it covers the turns since install.
     tps: averages.tps,
+    // The sums the means are taken over travel with them: the transcript's totals
+    // below are the whole session's and must not be divided by a mean taken over
+    // a handful of turns.
+    waitedTurns: averages.waitedTurns,
+    waitedMs: averages.waitedMs,
+    ratedTurns: averages.ratedTurns,
+    streamMs: averages.streamMs,
+    ratedTokens: averages.ratedTokens,
     outputTokens: sum.output,
     inputTokens: sum.input,
     cacheReadTokens: sum.cacheRead,
