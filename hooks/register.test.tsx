@@ -464,7 +464,7 @@ test('a wide band lays the totals in two columns, a narrow one in one', async ($
     for (const label of [
       '轮次 / 步数',
       '首 token 平均',
-      '模型速度',
+      '平均模型速度',
       '输出 token',
       '输入 token',
       '总 token',
@@ -495,7 +495,7 @@ test('the two figures read first are drawn in the accent colour, the rest dim', 
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
 
-  const speed = await ui.find({ type: 'Text', text: '模型速度' })
+  const speed = await ui.find({ type: 'Text', text: '平均模型速度' })
   expect(speed?.props.color).toBe('claude')
   expect(speed?.props.dimColor).toBe(false)
 
@@ -583,7 +583,7 @@ test('a running turn still feeds the averages when the file has caught up', asyn
 
   // No turn is running in this test, so the averages are the stored ones — the
   // point is that they are drawn at all, never as a bare dash beside a total.
-  expect((await ui.find({ type: 'Text', text: /模型速度/ }))?.text).toBe('模型速度')
+  expect((await ui.find({ type: 'Text', text: /平均模型速度/ }))?.text).toBe('平均模型速度')
 
   await ui.unmount()
 })

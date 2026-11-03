@@ -775,12 +775,12 @@ export const register: Register = on => {
           // when each response settled, not how long the model took to write it.
           // What survives is the turn's average across the turns this mod saw —
           // the turns before it was installed are only in the token counts.
-          ['模型速度', shown.tps == null ? '—' : `${shown.tps.toFixed(1)} tok/s`, true],
+          ['平均模型速度', shown.tps == null ? '—' : `${shown.tps.toFixed(1)} tok/s`, true],
           // The transcript gives this one; before it can be read — or after a
           // restart, when only the store's averages are left — the last measured
           // value stands rather than a dash.
           [
-            '端到端速度',
+            '平均端到端速度',
             (shown.settledTps ?? held?.settledTps ?? null) == null
               ? '—'
               : `${(shown.settledTps ?? held?.settledTps)!.toFixed(1)} tok/s`,
