@@ -162,13 +162,16 @@ function closeStepOf(turn: Live | null, now: number): void {
  */
 
 /**
- * No model sustains this many output tokens a second. A reading above it does
- * not mean the model was fast — it means the tokens were not produced over the
- * window being measured: a gateway buffered the response and delivered it in one
- * burst, so the first and last piece arrived milliseconds apart while the tokens
- * took seconds to generate.
+ * The fastest output a model is likely to sustain. A local Ollama host really
+ * does reach 280–500 tok/s, so the ceiling sits well above that rather than at
+ * what a hosted API averages.
+ *
+ * A reading above it is not a fast model: it is the window being wrong. A
+ * gateway that buffers a response delivers every piece in one burst, so the
+ * first and last arrive milliseconds apart while the tokens took seconds to
+ * make — 420 tokens seen over 17 ms reads as 24,700 tok/s, which no model does.
  */
-const IMPLAUSIBLE_TPS = 1000
+const IMPLAUSIBLE_TPS = 1500
 
 /**
  * The turn's output rate, measured over the time pieces were arriving.
@@ -574,12 +577,12 @@ export const register: Register = on => {
         }
       } else {
         add(`首 token 等待 ${msText(view.ttftMs)}`)
-        // Only a figure measured from the transcript is shown, and that needs the
-        // turn to have settled: while one runs there is no honest window — the
-        // pieces of a buffered response arrive in a burst, and timing them gave
-        // rates twenty times the truth. Saying nothing beats saying a number that
-        // never happened; the rate appears once the turn ends.
-        if (view.isLive !== true && view.tps !== null && view.tps !== undefined) {
+        // A local model really does reach hundreds of tokens a second, and the
+        // stream window is the only thing that can show it while the turn runs.
+        // `rateOf` has already fallen back to the turn's own elapsed time when
+        // the window is impossible, so whatever arrives here is a rate that can
+        // have happened — no need to hold it back until the turn ends.
+        if (view.tps !== null && view.tps !== undefined) {
           add(`本轮生成速度 ${view.tps.toFixed(1)} tok/s`, true)
         }
         // The size and the cache share are only final once the turn is: while it

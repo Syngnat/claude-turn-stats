@@ -588,11 +588,11 @@ test('a running turn still feeds the averages when the file has caught up', asyn
   await ui.unmount()
 })
 
-test('a running turn shows its size and its cache share, but no rate', async ($, on) => {
-  // The size and the cache share are counted as responses settle, so they are
-  // real while the turn runs. The rate is not: a buffered response's pieces
-  // arrive in a burst and any window inside it reports a rate that never
-  // happened. It waits for the turn to end, when the transcript can measure it.
+test('a running turn shows its rate, its size and its cache share', async ($, on) => {
+  // A local model really does reach hundreds of tokens a second, so the rate is
+  // worth showing while the turn runs. `rateOf` falls back to the turn's elapsed
+  // time when the stream window is impossible, so what is drawn can have
+  // happened.
   on(
     'state.get',
     holding({
@@ -611,10 +611,10 @@ test('a running turn shows its size and its cache share, but no rate', async ($,
 
   const line = await turnLine(ui)
   expect(line).toContain('首 token 等待 3.5s')
+  expect(line).toContain('本轮生成速度 480.4 tok/s')
   expect(line).toContain('已生成 21.6k tok')
   expect(line).toContain('本轮缓存命中 91.73%')
   expect(line).toContain('已耗时 119.1s')
-  expect(line).not.toContain('本轮生成速度')
 
   await ui.unmount()
 })
