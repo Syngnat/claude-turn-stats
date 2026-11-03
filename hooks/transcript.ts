@@ -196,7 +196,7 @@ export function parseTranscriptSum(exitCode: number, stdout: string): Transcript
  */
 export function totalsFrom(
   sum: TranscriptSum,
-  averages: { ttftMs: number | null; tps: number | null; settledTps?: number | null },
+  averages: { ttftMs: number | null; tps: number | null },
   contextPercent: number | null,
   measuredSteps: number | null = null,
 ): SessionTotals {
@@ -213,8 +213,6 @@ export function totalsFrom(
     // file cannot recover it (it holds when each response settled, not how long
     // the model took to write it), so it covers the turns since install.
     tps: averages.tps,
-    // The end-to-end rate is the file's own, over every response in the session.
-    settledTps: averages.settledTps ?? null,
     outputTokens: sum.output,
     inputTokens: sum.input,
     cacheReadTokens: sum.cacheRead,

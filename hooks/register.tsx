@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import type { SessionTotals, StepStats } from '../types'
-import { parseTranscriptSum, settledRate, totalsFrom, transcriptArgv, transcriptPathOf } from './transcript'
+import { parseTranscriptSum, totalsFrom, transcriptArgv, transcriptPathOf } from './transcript'
 
 // No shape tag: every field added so far left the others' meaning alone, so a
 // value written by an earlier version still reads. Adding one now would decline
@@ -255,7 +255,6 @@ function normalizeTurn(raw: unknown): StepStats | null {
   return {
     ttftMs: finite(value.ttftMs),
     tps: finite(value.tps),
-    settledTps: finite(value.settledTps),
     outputTokens: finite(value.outputTokens),
     cacheHitPercent: finite(value.cacheHitPercent),
     steps: finite(value.steps) ?? undefined,
@@ -281,7 +280,6 @@ function normalizeTotals(raw: unknown): SessionTotals | null {
     steps: finite(value.steps) ?? 0,
     ttftMs: finite(value.ttftMs),
     tps: finite(value.tps),
-    settledTps: finite(value.settledTps),
     outputTokens: finite(value.outputTokens) ?? 0,
     inputTokens: finite(value.inputTokens) ?? 0,
     cacheReadTokens: finite(value.cacheReadTokens) ?? 0,
@@ -309,7 +307,6 @@ function addToTotals(
     steps: 0,
     ttftMs: null,
     tps: null,
-    settledTps: null,
     outputTokens: 0,
     inputTokens: 0,
     cacheReadTokens: 0,
@@ -331,27 +328,9 @@ function addToTotals(
   const waited = turn.ttftMs ?? null
   const previousWaits = base.ttftMs === null ? 0 : Math.round(base.ttftMs * base.turns)
 
-  // The end-to-end rate is averaged the way the model's is: weighted by the
-  // tokens each turn produced, so a long turn counts for more than a short one.
-  // The running figures are kept as token-seconds, not as a mean of means.
-  const turnSettled = turn.settledTps ?? null
-  const turnSettledSeconds =
-    turnSettled !== null && turnSettled > 0 && turnOutput > 0 ? turnOutput / turnSettled : 0
-  const baseSettled = base.settledTps ?? null
-  const settledSecondsBefore =
-    baseSettled !== null && baseSettled > 0 && base.outputTokens > 0
-      ? base.outputTokens / baseSettled
-      : 0
-  const settledTotalSeconds = settledSecondsBefore + turnSettledSeconds
-  const settledTps =
-    settledTotalSeconds > 0
-      ? Math.round((outputTokens / settledTotalSeconds) * 10) / 10
-      : baseSettled
-
   return {
     turns: base.turns + 1,
     steps: base.steps + (turn.steps ?? 0),
-    settledTps,
     ttftMs:
       waited === null
         ? base.ttftMs
@@ -524,19 +503,13 @@ export const register: Register = on => {
             ({ exitCode, stdout }) => parseTranscriptSum(exitCode, stdout),
             () => null,
           )
-    // The transcript's own rate for this turn. It goes on the turn's own record
-    // as well as into the session's average, so the line above the prompt shows
-    // both rates — the stream's and the end-to-end one.
-    const settledForTurn = sum === null ? null : settledRate(sum.marks)
-    if (settledForTurn !== null) done.settledTps = settledForTurn
-
     const averaged = addToTotals(normalizeTotals(held), done, usage.context.percent ?? null)
     const nextTotals =
       sum === null
         ? averaged
         : totalsFrom(
             sum,
-            { ttftMs: averaged.ttftMs, tps: averaged.tps, settledTps: averaged.settledTps },
+            { ttftMs: averaged.ttftMs, tps: averaged.tps },
             usage.context.percent ?? null,
             null,
           )
@@ -607,16 +580,13 @@ export const register: Register = on => {
         }
       } else {
         add(`首 token 等待 ${msText(view.ttftMs)}`)
-        // Two rates, side by side and named apart. The first is the model's own
-        // — hundreds of tokens a second on a local host — and is what tells a
-        // fast model from a slow one. The second is what the turn actually got
-        // done per second, the network and the tool waits included. Reporting
-        // only one of them answered the other question wrongly.
-        if (view.tps !== null && view.tps !== undefined) {
+        // Only after the turn ends. Measuring mid-stream meant timing the pieces
+        // as they arrive, and a gateway that buffers them delivers the whole
+        // answer in a burst — the figure then ran to thousands, or fell back to
+        // something that looked ordinary but measured a different thing. A rate
+        // that is wrong in two different ways is worse than one that waits.
+        if (view.isLive !== true && view.tps !== null && view.tps !== undefined) {
           add(`模型 ${view.tps.toFixed(1)} tok/s`, true)
-        }
-        if (view.settledTps !== null && view.settledTps !== undefined) {
-          add(`端到端 ${view.settledTps.toFixed(1)} tok/s`, true)
         }
         // The size and the cache share are only final once the turn is: while it
         // runs they are a running tally, so they are named as one.
@@ -668,8 +638,6 @@ export const register: Register = on => {
       // makes the pieces arrive in a burst, and no window inside one response
       // can say how fast the tokens were produced. The gaps between responses
       // are real, so the rate comes from there.
-      const settled = sum === null ? null : settledRate(sum.marks)
-
       const all =
         sum === null
           ? held
@@ -682,11 +650,6 @@ export const register: Register = on => {
                 ? (held?.steps ?? 0) + (live?.steps ?? 0)
                 : null,
             )
-      // The transcript's rate is kept beside the stream's, not in place of it:
-      // one says how fast the model wrote, the other how fast the turn got its
-      // work done. Overwriting the first with the second hid the model's speed.
-      const measured = settled !== null ? { ...all!, settledTps: settled } : all
-
       // While a turn runs, the file lags it: a response's row is written as the
       // response settles, so what the turn has done so far is only in `live`.
       // Without this the totals sat still for the whole of a long turn.
@@ -696,7 +659,7 @@ export const register: Register = on => {
       // responses; adding `live` whole would count those twice. Steps the file
       // has are compared with the steps counted here, and the difference is what
       // is still missing.
-      const allMeasured = measured
+      const allMeasured = all
       const running = live !== null && !live.isDone
       const runningTps = running && live !== null ? measureOf(live, await $.clock.now()).tps : null
       const liveWait = live?.firstWaitMs ?? null
@@ -776,16 +739,6 @@ export const register: Register = on => {
           // What survives is the turn's average across the turns this mod saw —
           // the turns before it was installed are only in the token counts.
           ['平均模型速度', shown.tps == null ? '—' : `${shown.tps.toFixed(1)} tok/s`, true],
-          // The transcript gives this one; before it can be read — or after a
-          // restart, when only the store's averages are left — the last measured
-          // value stands rather than a dash.
-          [
-            '平均端到端速度',
-            (shown.settledTps ?? held?.settledTps ?? null) == null
-              ? '—'
-              : `${(shown.settledTps ?? held?.settledTps)!.toFixed(1)} tok/s`,
-            true,
-          ],
           // Then the four figures that are all one thing — the session's tokens:
           // what went in, how much of that the cache served, what came out, and
           // what the whole traffic adds up to. Grouped, because read apart they

@@ -588,11 +588,11 @@ test('a running turn still feeds the averages when the file has caught up', asyn
   await ui.unmount()
 })
 
-test('a running turn shows its rate, its size and its cache share', async ($, on) => {
-  // A local model really does reach hundreds of tokens a second, so the rate is
-  // worth showing while the turn runs. `rateOf` falls back to the turn's elapsed
-  // time when the stream window is impossible, so what is drawn can have
-  // happened.
+test('a running turn shows its size and cache share, and no rate', async ($, on) => {
+  // The rate waits for the turn to end: timing the pieces as they arrive
+  // measures a buffering gateway, not the model, and gave two kinds of wrong
+  // figure. What the turn has produced so far is counted as responses settle,
+  // so that is real and is shown.
   on(
     'state.get',
     holding({
@@ -611,10 +611,10 @@ test('a running turn shows its rate, its size and its cache share', async ($, on
 
   const line = await turnLine(ui)
   expect(line).toContain('首 token 等待 3.5s')
-  expect(line).toContain('模型 480.4 tok/s')
   expect(line).toContain('已生成 21.6k tok')
   expect(line).toContain('本轮缓存命中 91.73%')
   expect(line).toContain('已耗时 119.1s')
+  expect(line).not.toContain('模型')
 
   await ui.unmount()
 })
@@ -626,13 +626,12 @@ test('the fold shows the session mean, not the last turn repeated', async ($, on
   on(
     'state.get',
     holding(
-      { ttftMs: 5900, tps: 254.9, settledTps: 27.4, outputTokens: 374, steps: 1, isLive: false, elapsedMs: 9000 },
+      { ttftMs: 5900, tps: 254.9, outputTokens: 374, steps: 1, isLive: false, elapsedMs: 9000 },
       {
         turns: 74,
         steps: 662,
         ttftMs: 5900,
         tps: 180.2,
-        settledTps: 41.7,
         outputTokens: 354_300,
         inputTokens: 207_200_000,
         cacheReadTokens: 203_200_000,
@@ -650,9 +649,8 @@ test('the fold shows the session mean, not the last turn repeated', async ($, on
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
 
-  // The fold's two rates differ from the turn's own on the line above.
+  // The fold's mean differs from the turn's own figure on the line above.
   expect((await ui.find({ type: 'Text', text: '180.2 tok/s' }))?.text).toBe('180.2 tok/s')
-  expect((await ui.find({ type: 'Text', text: '41.7 tok/s' }))?.text).toBe('41.7 tok/s')
 
   await ui.unmount()
 })
