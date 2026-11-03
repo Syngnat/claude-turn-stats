@@ -160,6 +160,44 @@ function closeStepOf(turn: Live | null, now: number): void {
  * The turn is passed in, never read from the variable: the caller has awaited
  * a clock read by then, and the turn may have ended while it waited.
  */
+
+/**
+ * No model sustains this many output tokens a second. A reading above it does
+ * not mean the model was fast — it means the tokens were not produced over the
+ * window being measured: a gateway buffered the response and delivered it in one
+ * burst, so the first and last piece arrived milliseconds apart while the tokens
+ * took seconds to generate.
+ */
+const IMPLAUSIBLE_TPS = 1000
+
+/**
+ * The turn's output rate, measured over the time pieces were arriving.
+ *
+ * That window is the honest one for a stream that arrives as it is produced, and
+ * it freezes instead of sliding while the model pauses. It is also blind to a
+ * buffered stream, where every piece lands at once: the window collapses to a
+ * few milliseconds and the rate runs to tens of thousands. Rather than clamp the
+ * figure — which would report a number that never happened — the window is
+ * swapped for the turn's own elapsed time, which the buffer cannot shrink, and
+ * the rate is taken over that. The result is the end-to-end rate: what the
+ * session actually got out per second of the turn.
+ */
+function rateOf(turn: Live, streamMs: number, now: number): number | null {
+  if (turn.outputTokens <= 0) return null
+
+  const streamed = streamMs > 0 ? turn.outputTokens / (streamMs / 1000) : null
+  if (streamed !== null && streamed <= IMPLAUSIBLE_TPS) return streamed
+
+  // The stream window is unusable. Fall back to how long the turn has run,
+  // measured from the first token so the wait before it is not counted twice.
+  const elapsed = now - turn.startedAt
+  const waited = turn.firstWaitMs ?? 0
+  const generatingMs = Math.max(0, elapsed - waited)
+  if (generatingMs <= 0) return streamed
+
+  return turn.outputTokens / (generatingMs / 1000)
+}
+
 function measureOf(turn: Live, now: number): StepStats {
   // The step in flight counts up to its last chunk, not to `now`: between
   // chunks the model is not streaming, and adding that time made the rate
@@ -169,7 +207,8 @@ function measureOf(turn: Live, now: number): StepStats {
       ? Math.max(0, turn.lastChunkAt - turn.stepFirstAt)
       : 0
   const streamMs = turn.streamMs + inFlightMs
-  const tps = turn.outputTokens > 0 && streamMs > 0 ? turn.outputTokens / (streamMs / 1000) : null
+
+  const tps = rateOf(turn, streamMs, now)
 
   return {
     ttftMs: turn.firstWaitMs === null ? null : Math.round(turn.firstWaitMs),

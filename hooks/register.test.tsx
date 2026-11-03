@@ -647,6 +647,37 @@ test('a pause mid-turn does not drag the rate toward zero', async ($, on) => {
   await ui.unmount()
 })
 
+test('a rate beyond what a model can produce is re-measured, not clamped', async ($, on) => {
+  // A buffered gateway delivers everything in one burst: the pieces arrive
+  // milliseconds apart while the tokens took seconds to make, so the stream
+  // window collapses and the rate runs to tens of thousands. The fix is not to
+  // cap the figure — that reports a number that never happened — but to measure
+  // over the turn itself, which the buffer cannot shrink.
+  //
+  // 420 tokens, first piece 2.8s in, turn 9.0s: 420 / (9.0 - 2.8) = 67.7 tok/s.
+  const live = {
+    ttftMs: 2800,
+    tps: 67.7,
+    outputTokens: 420,
+    cacheHitPercent: 99.92,
+    steps: 4,
+    isLive: true,
+    elapsedMs: 9000,
+  }
+  on('state.get', holding(live))
+  engineDraws(on)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+  const line = await turnLine(ui)
+  // Whatever the shape of the stream, the figure is a rate a model can produce.
+  const match = line.match(/本轮生成速度 ([\d.]+) tok\/s/)
+  expect(match).not.toBeNull()
+  expect(Number(match![1])).toBeLessThan(1000)
+
+  await ui.unmount()
+})
+
 test('the band has one button, labelled for the fold it flips', async ($, on) => {
   on(
     'state.get',
