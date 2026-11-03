@@ -598,23 +598,40 @@ export const register: Register = on => {
           ? Math.round((waitedBefore + liveWait) / (all.turns + 1))
           : all?.ttftMs ?? null
 
+      // The band above may be showing a wait this mod did not measure itself:
+      // it falls back to the stored turn, and `live` is still null when a reload
+      // lands mid-turn. The fold reads the same figure from the same place, so
+      // the two never disagree — a rate on the line and a dash underneath.
+      const fallbackWait = restored?.turn?.ttftMs ?? null
+      const fallbackTps = restored?.turn?.tps ?? null
+
       const heldSteps = all?.steps ?? 0
       const liveSteps = live?.steps ?? 0
       const missingSteps = Math.max(0, liveSteps - heldSteps)
+
+      // The counts and the averages are handled apart, because only the counts
+      // can be double-counted by the file. The file may hold every step of the
+      // turn in flight, so `missingSteps` is often 0 — and gating the averages
+      // on it left them blank for a turn the file had caught up with, while the
+      // band above already showed its rate.
+      // `all` wins when it already has averages; the fallbacks only fill a gap,
+      // so a session whose file is complete still reads its own numbers.
       const shown =
-        all === null || !running || missingSteps === 0
+        all === null
           ? all
           : {
               ...all,
-              // A turn the file has not seen at all is still one turn.
-              turns: all.turns + (heldSteps === 0 ? 1 : 0),
-              steps: all.steps + missingSteps,
+              // A turn the file has not seen at all is still one turn; one it
+              // has seen is already counted there.
+              turns: running ? all.turns + (heldSteps === 0 ? 1 : 0) : all.turns,
+              steps: running ? all.steps + missingSteps : all.steps,
               // The averages take the turn in flight in, so they move while it
               // runs instead of waiting for it to end. Both are merged the way
               // the session's own are: the wait by turn count, the rate by the
-              // stream time each was measured over.
-              ttftMs: mergedWait,
-              tps: mergedTps,
+              // stream time each was measured over. Failing that, the last turn
+              // this mod measured — the same figure the band above is showing.
+              ttftMs: running ? (mergedWait ?? all.ttftMs) : (all.ttftMs ?? fallbackWait),
+              tps: running ? (mergedTps ?? all.tps) : (all.tps ?? fallbackTps),
             }
 
       // Nothing measured and nothing in the file: there is no total to draw,

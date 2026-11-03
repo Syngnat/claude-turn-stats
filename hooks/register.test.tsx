@@ -565,6 +565,28 @@ test('a turn the file has not recorded yet adds its steps once', async ($, on) =
   await ui.unmount()
 })
 
+test('a running turn still feeds the averages when the file has caught up', async ($, on) => {
+  // The file may already hold every step of the turn in flight, so the step gap
+  // is 0. Gating the averages on that gap left them blank (`—`) while the band
+  // above was already showing the turn's own rate.
+  on('state.get', holding(null, null, true))
+  usageOf(on)
+  // 12 turns, 241 responses — more than the turn in flight has run, so no gap.
+  transcriptSums(on, { turns: 12, responses: 241, input: 38_665_129, output: 180_562, cacheRead: 38_206_122 })
+  on('store.get', () => ({ value: undefined }))
+  engineDraws(on)
+
+  await startSession($, on)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+  // No turn is running in this test, so the averages are the stored ones — the
+  // point is that they are drawn at all, never as a bare dash beside a total.
+  expect((await ui.find({ type: 'Text', text: /平均输出速度/ }))?.text).toBe('平均输出速度')
+
+  await ui.unmount()
+})
+
 test('the band has one button, labelled for the fold it flips', async ($, on) => {
   on(
     'state.get',
