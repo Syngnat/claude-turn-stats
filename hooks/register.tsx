@@ -771,6 +771,10 @@ export const register: Register = on => {
           ['轮次 / 步数', `${shown.turns} 轮 ${shown.steps} 步`, false],
           ['首 token 平均', shown.ttftMs === null ? '—' : msText(shown.ttftMs), false],
           // The model's rate and the turn's, the same pair the line above shows.
+          // The model's own rate cannot be recovered from the file: it records
+          // when each response settled, not how long the model took to write it.
+          // What survives is the turn's average across the turns this mod saw —
+          // the turns before it was installed are only in the token counts.
           ['模型速度', shown.tps == null ? '—' : `${shown.tps.toFixed(1)} tok/s`, true],
           // The transcript gives this one; before it can be read — or after a
           // restart, when only the store's averages are left — the last measured

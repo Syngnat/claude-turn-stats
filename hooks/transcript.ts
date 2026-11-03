@@ -209,7 +209,11 @@ export function totalsFrom(
     // step is, so the responses are the steps the session ran.
     steps: measuredSteps ?? sum.responses,
     ttftMs: averages.ttftMs,
+    // The model's rate is the one this mod measured while the turns ran; the
+    // file cannot recover it (it holds when each response settled, not how long
+    // the model took to write it), so it covers the turns since install.
     tps: averages.tps,
+    // The end-to-end rate is the file's own, over every response in the session.
     settledTps: averages.settledTps ?? null,
     outputTokens: sum.output,
     inputTokens: sum.input,
@@ -240,28 +244,31 @@ export function totalsFrom(
 export function settledRate(marks: Array<[number, number]>): number | null {
   if (marks.length < 2) return null
 
-  // Back from the end while the gaps stay short. 90 s is the cut: past that the
-  // session was not answering, it was doing something else.
+  // Every response in the file, not a trailing window: the session's rate is the
+  // whole session's, and a window of the last few made the fold's "average" the
+  // same figure as the line above it.
+  //
+  // A gap longer than this is the person reading, a tool running, or the session
+  // sitting idle. Those seconds are skipped, not counted into the denominator —
+  // counting them would report a rate far below the one the model sustained.
   const MAX_GAP_MS = 90_000
-  const WINDOW = 12
-  let start = marks.length - 1
 
-  while (start > 0 && marks.length - start < WINDOW) {
-    const gap = marks[start]![0] - marks[start - 1]![0]
-    if (gap <= 0 || gap > MAX_GAP_MS) break
-    start -= 1
+  let tokens = 0
+  let spanMs = 0
+
+  for (let at = 1; at < marks.length; at += 1) {
+    const gap = marks[at]![0] - marks[at - 1]![0]
+    if (gap <= 0 || gap > MAX_GAP_MS) continue
+
+    // The tokens of the later response were produced over this gap: the previous
+    // one had settled when the clock started. The first response's own time is
+    // before any gap, so it is not in the sum.
+    tokens += marks[at]![1]
+    spanMs += gap
   }
 
-  const first = marks[start]!
-  const last = marks[marks.length - 1]!
-  const spanMs = last[0] - first[0]
-  if (spanMs <= 0) return null
-
-  // Tokens produced in the window, the first response's excluded: its own time
-  // is before the span begins.
-  let tokens = 0
-  for (let at = start + 1; at < marks.length; at += 1) tokens += marks[at]![1]
-  if (tokens <= 0) return null
+  if (spanMs <= 0 || tokens <= 0) return null
 
   return Math.round((tokens / (spanMs / 1000)) * 10) / 10
 }
+
