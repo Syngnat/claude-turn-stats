@@ -619,6 +619,44 @@ test('a running turn shows its rate, its size and its cache share', async ($, on
   await ui.unmount()
 })
 
+test('the fold shows the session mean, not the last turn repeated', async ($, on) => {
+  // The band above shows this turn's 254.9 tok/s; the fold must show the mean
+  // over the session. They read the same when the fold was handed the last
+  // turn's figure instead of an average — which is exactly what went wrong.
+  on(
+    'state.get',
+    holding(
+      { ttftMs: 5900, tps: 254.9, settledTps: 27.4, outputTokens: 374, steps: 1, isLive: false, elapsedMs: 9000 },
+      {
+        turns: 74,
+        steps: 662,
+        ttftMs: 5900,
+        tps: 180.2,
+        settledTps: 41.7,
+        outputTokens: 354_300,
+        inputTokens: 207_200_000,
+        cacheReadTokens: 203_200_000,
+        cacheHitPercent: 98.05,
+        contextPercent: 48,
+      },
+      true,
+    ),
+  )
+  usageOf(on)
+  transcriptSums(on, { turns: 74, responses: 662, input: 207_200_000, output: 354_300, cacheRead: 203_200_000 })
+  on('store.get', () => ({ value: undefined }))
+  engineDraws(on)
+  await startSession($, on)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+  // The fold's two rates differ from the turn's own on the line above.
+  expect((await ui.find({ type: 'Text', text: '180.2 tok/s' }))?.text).toBe('180.2 tok/s')
+  expect((await ui.find({ type: 'Text', text: '41.7 tok/s' }))?.text).toBe('41.7 tok/s')
+
+  await ui.unmount()
+})
+
 test('the band has one button, labelled for the fold it flips', async ($, on) => {
   on(
     'state.get',

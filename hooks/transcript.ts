@@ -196,7 +196,7 @@ export function parseTranscriptSum(exitCode: number, stdout: string): Transcript
  */
 export function totalsFrom(
   sum: TranscriptSum,
-  averages: { ttftMs: number | null; tps: number | null },
+  averages: { ttftMs: number | null; tps: number | null; settledTps?: number | null },
   contextPercent: number | null,
   measuredSteps: number | null = null,
 ): SessionTotals {
@@ -210,6 +210,7 @@ export function totalsFrom(
     steps: measuredSteps ?? sum.responses,
     ttftMs: averages.ttftMs,
     tps: averages.tps,
+    settledTps: averages.settledTps ?? null,
     outputTokens: sum.output,
     inputTokens: sum.input,
     cacheReadTokens: sum.cacheRead,

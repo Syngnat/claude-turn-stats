@@ -309,6 +309,7 @@ function addToTotals(
     steps: 0,
     ttftMs: null,
     tps: null,
+    settledTps: null,
     outputTokens: 0,
     inputTokens: 0,
     cacheReadTokens: 0,
@@ -330,9 +331,27 @@ function addToTotals(
   const waited = turn.ttftMs ?? null
   const previousWaits = base.ttftMs === null ? 0 : Math.round(base.ttftMs * base.turns)
 
+  // The end-to-end rate is averaged the way the model's is: weighted by the
+  // tokens each turn produced, so a long turn counts for more than a short one.
+  // The running figures are kept as token-seconds, not as a mean of means.
+  const turnSettled = turn.settledTps ?? null
+  const turnSettledSeconds =
+    turnSettled !== null && turnSettled > 0 && turnOutput > 0 ? turnOutput / turnSettled : 0
+  const baseSettled = base.settledTps ?? null
+  const settledSecondsBefore =
+    baseSettled !== null && baseSettled > 0 && base.outputTokens > 0
+      ? base.outputTokens / baseSettled
+      : 0
+  const settledTotalSeconds = settledSecondsBefore + turnSettledSeconds
+  const settledTps =
+    settledTotalSeconds > 0
+      ? Math.round((outputTokens / settledTotalSeconds) * 10) / 10
+      : baseSettled
+
   return {
     turns: base.turns + 1,
     steps: base.steps + (turn.steps ?? 0),
+    settledTps,
     ttftMs:
       waited === null
         ? base.ttftMs
@@ -488,6 +507,8 @@ export const register: Register = on => {
       turn.outputTokens = reported
     }
 
+    // The end-to-end rate is measured from the transcript below; it lands on the
+    // same record so the line above the prompt can show both rates, not one.
     const done = { ...measureOf(turn, now), isLive: false }
 
     // The session's figures come from the transcript, so they cover the whole
@@ -503,13 +524,19 @@ export const register: Register = on => {
             ({ exitCode, stdout }) => parseTranscriptSum(exitCode, stdout),
             () => null,
           )
+    // The transcript's own rate for this turn. It goes on the turn's own record
+    // as well as into the session's average, so the line above the prompt shows
+    // both rates — the stream's and the end-to-end one.
+    const settledForTurn = sum === null ? null : settledRate(sum.marks)
+    if (settledForTurn !== null) done.settledTps = settledForTurn
+
     const averaged = addToTotals(normalizeTotals(held), done, usage.context.percent ?? null)
     const nextTotals =
       sum === null
         ? averaged
         : totalsFrom(
             sum,
-            { ttftMs: averaged.ttftMs, tps: averaged.tps },
+            { ttftMs: averaged.ttftMs, tps: averaged.tps, settledTps: averaged.settledTps },
             usage.context.percent ?? null,
             null,
           )
