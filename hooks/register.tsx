@@ -745,7 +745,16 @@ export const register: Register = on => {
           ['首 token 平均', shown.ttftMs === null ? '—' : msText(shown.ttftMs), false],
           // The model's rate and the turn's, the same pair the line above shows.
           ['模型速度', shown.tps == null ? '—' : `${shown.tps.toFixed(1)} tok/s`, true],
-          ['端到端速度', shown.settledTps == null ? '—' : `${shown.settledTps.toFixed(1)} tok/s`, true],
+          // The transcript gives this one; before it can be read — or after a
+          // restart, when only the store's averages are left — the last measured
+          // value stands rather than a dash.
+          [
+            '端到端速度',
+            (shown.settledTps ?? held?.settledTps ?? null) == null
+              ? '—'
+              : `${(shown.settledTps ?? held?.settledTps)!.toFixed(1)} tok/s`,
+            true,
+          ],
           // Then the four figures that are all one thing — the session's tokens:
           // what went in, how much of that the cache served, what came out, and
           // what the whole traffic adds up to. Grouped, because read apart they
