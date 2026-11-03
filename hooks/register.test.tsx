@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
-import { settledRate } from './transcript'
+import { combineRate, combineWait, settledRate } from './transcript'
 
 /** The id this test session owns: what the store's entries are filed under. */
 const SESSION_ID = '11112222-3333-4444-5555-666677778888'
@@ -869,5 +869,29 @@ test('the rate is measured between responses, where a buffer cannot shrink it', 
   // One response is not a rate.
   expect(settledRate([[1_000_000, 100]])).toBeNull()
   expect(settledRate([])).toBeNull()
+})
+
+test('combineRate adds the sums; it never divides one total by the other rate', async () => {
+  // The regression: 616,800 transcript tokens divided by a 369 tok/s mean taken
+  // over two turns read as 6600. Adding what each side was measured over cannot
+  // produce that — here 7,384 tokens over 20 s plus 1,000 over 2 s is 381.1.
+  expect(combineRate(7384, 20_000, 1000, 2000)).toBe(381.1)
+
+  // No base to add to leaves the caller with its own stored mean.
+  expect(combineRate(null, null, 1000, 2000)).toBeNull()
+
+  // Nothing measured yet on either side.
+  expect(combineRate(0, 0, 0, 0)).toBeNull()
+
+  // A zero-length window cannot yield a rate rather than an infinity.
+  expect(combineRate(500, 0, 0, 0)).toBeNull()
+})
+
+test('combineWait weighs by turn count, not by the session’s turn total', async () => {
+  // Two turns waited 8,400 ms together; a third waited 900 ms: 3,100 ms each.
+  expect(combineWait(8400, 2, 900)).toBe(3100)
+
+  // Unknown base: nothing to add to.
+  expect(combineWait(null, null, 900)).toBeNull()
 })
 

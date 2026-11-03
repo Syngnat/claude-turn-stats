@@ -286,3 +286,45 @@ export function settledRate(marks: Array<[number, number]>): number | null {
   return Math.round((tokens / (spanMs / 1000)) * 10) / 10
 }
 
+/**
+ * The rate over two sums of tokens and time, added together.
+ *
+ * A session's mean and the turn in flight are merged by adding what they were
+ * measured over — never by averaging two averages, and never by dividing one
+ * total by the other's rate. That division is what turned 369 tok/s into 6600:
+ * the totals came from the whole transcript and the rate from a handful of the
+ * mod's own turns.
+ *
+ * @param baseTokens tokens behind the session's mean so far, `null` when unknown
+ * @param baseMs stream time behind it, `null` when unknown
+ * @param extraTokens tokens of the turn in flight
+ * @param extraMs stream time of the turn in flight
+ */
+export function combineRate(
+  baseTokens: number | null,
+  baseMs: number | null,
+  extraTokens: number,
+  extraMs: number,
+): number | null {
+  if (baseTokens === null || baseMs === null) return null
+
+  const tokens = baseTokens + extraTokens
+  const ms = baseMs + extraMs
+  if (tokens <= 0 || ms <= 0) return null
+
+  return Math.round((tokens / (ms / 1000)) * 10) / 10
+}
+
+/**
+ * The mean first-token wait over two sums of waits and how many turns they cover.
+ * Same rule as `combineRate`: add the sums, divide once.
+ */
+export function combineWait(
+  baseMs: number | null,
+  baseTurns: number | null,
+  extraMs: number,
+): number | null {
+  if (baseMs === null || baseTurns === null) return null
+
+  return Math.round((baseMs + extraMs) / (baseTurns + 1))
+}

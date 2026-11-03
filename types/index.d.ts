@@ -22,6 +22,14 @@ export type StepStats = {
   ttftMs?: number | null
   /** Output rate while the model was writing; reported once the turn ends. */
   tps?: number | null
+  /*
+   * The window `tps` was taken over: tokens and the time they took, both from
+   * the steps that finished. They travel with the rate so a session mean never
+   * has to reconstruct the duration from `outputTokens / tps` — that division
+   * mixes the API's turn total with a rate measured over the step sums.
+   */
+  streamMs?: number | null
+  settledTokens?: number | null
   outputTokens?: number | null
   /** The share of this turn's input tokens the prompt cache served, 0 to 100. */
   cacheHitPercent?: number | null

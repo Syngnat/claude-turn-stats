@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import type { SessionTotals, StepStats } from '../types'
-import { parseTranscriptSum, totalsFrom, transcriptArgv, transcriptPathOf } from './transcript'
+import { combineRate, combineWait, parseTranscriptSum, totalsFrom, transcriptArgv, transcriptPathOf } from './transcript'
 
 // No shape tag: every field added so far left the others' meaning alone, so a
 // value written by an earlier version still reads. Adding one now would decline
@@ -166,15 +166,6 @@ function closeStepOf(turn: Live | null, now: number, stepTokens = 0): void {
 }
 
 /**
- * What the turn has come to as of `now`. The rate is the turn's output tokens
- * over the turn's whole stream time, both summed across its steps, with the
- * first step's first-token wait left out — that wait is reported on its own.
- *
- * The turn is passed in, never read from the variable: the caller has awaited
- * a clock read by then, and the turn may have ended while it waited.
- */
-
-/**
  * The fastest output a model is likely to sustain. A local Ollama host really
  * does reach 280–500 tok/s, so the ceiling sits well above that rather than at
  * what a hosted API averages.
@@ -187,16 +178,14 @@ function closeStepOf(turn: Live | null, now: number, stepTokens = 0): void {
 const IMPLAUSIBLE_TPS = 1500
 
 /**
- * The turn's output rate, measured over the time pieces were arriving.
+ * The turn's output rate, measured over the time its finished steps took.
  *
- * That window is the honest one for a stream that arrives as it is produced, and
- * it freezes instead of sliding while the model pauses. It is also blind to a
+ * That window is honest for a stream that arrives as it is produced, and it
+ * freezes instead of sliding while the model pauses. It cannot describe a
  * buffered stream, where every piece lands at once: the window collapses to a
- * few milliseconds and the rate runs to tens of thousands. Rather than clamp the
- * figure — which would report a number that never happened — the window is
- * swapped for the turn's own elapsed time, which the buffer cannot shrink, and
- * the rate is taken over that. The result is the end-to-end rate: what the
- * session actually got out per second of the turn.
+ * few milliseconds and the rate runs to tens of thousands. Above the ceiling the
+ * answer is nothing at all — a blank, not a different measurement wearing the
+ * same name.
  */
 function rateOf(turn: Live): number | null {
   // Over the steps that have finished, and only those: their tokens and the
@@ -214,6 +203,13 @@ function rateOf(turn: Live): number | null {
   return rate <= IMPLAUSIBLE_TPS ? rate : null
 }
 
+/**
+ * What the turn has come to as of `now`. The rate is over the steps that have
+ * finished, with the first-token wait reported on its own.
+ *
+ * The turn is passed in, never read from the variable: the caller has awaited a
+ * clock read by then, and the turn may have ended while it waited.
+ */
 function measureOf(turn: Live, now: number): StepStats {
   // Only closed steps feed the rate: their tokens and their time are both
   // final. The step in flight has tokens but no finished window.
@@ -221,8 +217,11 @@ function measureOf(turn: Live, now: number): StepStats {
 
   return {
     ttftMs: turn.firstWaitMs === null ? null : Math.round(turn.firstWaitMs),
-    // The model's own rate, from the stream window.
+    // The model's own rate, from the stream window, together with that window so
+    // a session mean divides by the time it was actually measured over.
     tps: tps === null ? null : Math.round(tps * 10) / 10,
+    streamMs: turn.streamMs > 0 ? Math.round(turn.streamMs) : null,
+    settledTokens: turn.settledTokens > 0 ? turn.settledTokens : null,
     outputTokens: turn.outputTokens > 0 ? turn.outputTokens : null,
     // Kept to two decimals rather than a whole percent: a session that hits the
     // cache 99.6% of the time should not read as a flat 100%.
@@ -261,6 +260,8 @@ function normalizeTurn(raw: unknown): StepStats | null {
   return {
     ttftMs: finite(value.ttftMs),
     tps: finite(value.tps),
+    streamMs: finite(value.streamMs),
+    settledTokens: finite(value.settledTokens),
     outputTokens: finite(value.outputTokens),
     cacheHitPercent: finite(value.cacheHitPercent),
     steps: finite(value.steps) ?? undefined,
@@ -338,7 +339,22 @@ function addToTotals(
 
   const turnTps = turn.tps ?? null
   const turnOutput = turn.outputTokens ?? 0
-  const turnStreamMs = turnTps !== null && turnTps > 0 ? (turnOutput / turnTps) * 1000 : 0
+  // The window the rate was measured over, when the turn carries it. Deriving it
+  // from `outputTokens / tps` is only the fallback for a value written by an
+  // older version: the API's turn total and the step sums need not agree, and
+  // dividing one by a rate taken over the other is how the 6600 came about.
+  const turnStreamMs =
+    turn.streamMs != null && turn.streamMs > 0
+      ? turn.streamMs
+      : turnTps !== null && turnTps > 0
+        ? (turnOutput / turnTps) * 1000
+        : 0
+  const turnRatedTokens =
+    turn.settledTokens != null && turn.settledTokens > 0
+      ? turn.settledTokens
+      : turnStreamMs > 0
+        ? turnOutput
+        : 0
   const waited = turn.ttftMs ?? null
 
   // A turn with no first-token figure (aborted before any token) does not pull
@@ -348,7 +364,7 @@ function addToTotals(
   const nextWaitedMs = waited === null ? waitedMs : waitedMs + waited
   const nextRatedTurns = turnStreamMs > 0 ? ratedTurns + 1 : ratedTurns
   const nextStreamMs = streamMs + turnStreamMs
-  const nextRatedTokens = ratedTokens + (turnStreamMs > 0 ? turnOutput : 0)
+  const nextRatedTokens = ratedTokens + turnRatedTokens
 
   const inputTokens = base.inputTokens + (live?.inputTokens ?? 0)
   const cacheReadTokens = base.cacheReadTokens + (live?.cacheReadTokens ?? 0)
@@ -518,8 +534,6 @@ export const register: Register = on => {
       turn.outputTokens = reported
     }
 
-    // The end-to-end rate is measured from the transcript below; it lands on the
-    // same record so the line above the prompt can show both rates, not one.
     const done = { ...measureOf(turn, now), isLive: false }
 
     // The session's figures come from the transcript, so they cover the whole
@@ -673,10 +687,6 @@ export const register: Register = on => {
               ({ exitCode, stdout }) => parseTranscriptSum(exitCode, stdout),
               () => null,
             )
-      // The rate is the transcript's own, not the stream's: a buffering gateway
-      // makes the pieces arrive in a burst, and no window inside one response
-      // can say how fast the tokens were produced. The gaps between responses
-      // are real, so the rate comes from there.
       const all =
         sum === null
           ? held
@@ -708,29 +718,26 @@ export const register: Register = on => {
       // is still missing.
       const allMeasured = all
       const running = live !== null && !live.isDone
-      const runningTps = running && live !== null ? measureOf(live, await $.clock.now()).tps : null
       const liveWait = live?.firstWaitMs ?? null
-      const liveOut = live?.outputTokens ?? 0
 
-      // The session's rate is a weighted mean over stream time; the turn in
-      // flight joins it the same way, not as a plain replacement.
-      const sessionStreamMs =
-        allMeasured?.tps != null && allMeasured.tps > 0
-          ? (allMeasured.outputTokens / allMeasured.tps) * 1000
-          : 0
-      const liveStreamMs = runningTps != null && runningTps > 0 ? (liveOut / runningTps) * 1000 : 0
+      // The sums the means are taken over, extended by the turn in flight. Never
+      // `outputTokens / tps`: that divides the transcript's total by a mean taken
+      // over this mod's turns, which is what produced 6600 tok/s.
+      const baseStreamMs = allMeasured?.streamMs ?? null
+      const baseRatedTokens = allMeasured?.ratedTokens ?? null
+      const liveStreamMs = live?.streamMs ?? 0
+      const liveRatedTokens = live?.settledTokens ?? 0
       const mergedTps =
-        sessionStreamMs + liveStreamMs > 0
-          ? Math.round(
-              ((allMeasured!.outputTokens + liveOut) / ((sessionStreamMs + liveStreamMs) / 1000)) * 10,
-            ) / 10
-          : allMeasured?.tps ?? null
-      const waitedBefore =
-        allMeasured?.ttftMs != null ? Math.round(allMeasured.ttftMs * allMeasured.turns) : 0
+        combineRate(baseRatedTokens, baseStreamMs, liveRatedTokens, liveStreamMs) ??
+        allMeasured?.tps ??
+        null
+
+      const baseWaitedTurns = allMeasured?.waitedTurns ?? null
+      const baseWaitedMs = allMeasured?.waitedMs ?? null
       const mergedWait =
-        liveWait != null && allMeasured !== null
-          ? Math.round((waitedBefore + liveWait) / (allMeasured.turns + 1))
-          : allMeasured?.ttftMs ?? null
+        (liveWait === null ? null : combineWait(baseWaitedMs, baseWaitedTurns, liveWait)) ??
+        allMeasured?.ttftMs ??
+        null
 
       // The band above may be showing a wait this mod did not measure itself:
       // it falls back to the stored turn, and `live` is still null when a reload
@@ -764,10 +771,11 @@ export const register: Register = on => {
               // the session's own are: the wait by turn count, the rate by the
               // stream time each was measured over. Failing that, the last turn
               // this mod measured — the same figure the band above is showing.
+              // While a turn runs, both means take it in, so the fold agrees with
+              // the line above. Once it ends, the stored mean is the right one:
+              // `addToTotals` has already folded the turn in.
               ttftMs: running ? (mergedWait ?? allMeasured.ttftMs) : (allMeasured.ttftMs ?? fallbackWait),
-              // The transcript's measured rate wins whenever there is one: the
-              // stream has no window that a buffering gateway cannot shrink.
-              tps: allMeasured.tps ?? (running ? mergedTps : fallbackTps),
+              tps: running ? (mergedTps ?? allMeasured.tps) : (allMeasured.tps ?? fallbackTps),
             }
 
       // Nothing measured and nothing in the file: there is no total to draw,
