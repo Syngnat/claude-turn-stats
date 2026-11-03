@@ -30,6 +30,13 @@ type Live = {
   turnId: string
   stepStartedAt: number | null
   stepFirstAt: number | null
+  /**
+   * When the last piece of the answer arrived. The stream time runs to here,
+   * not to "now": a model that pauses — thinking, or waiting on a tool — would
+   * otherwise add idle seconds to the denominator and drag the rate to zero
+   * while nothing was being generated.
+   */
+  lastChunkAt: number | null
   firstWaitMs: number | null
   streamMs: number
   outputTokens: number
@@ -101,6 +108,7 @@ function blankTurn(turnId: string, startedAt: number): Live {
     turnId,
     stepStartedAt: null,
     stepFirstAt: null,
+    lastChunkAt: null,
     firstWaitMs: null,
     streamMs: 0,
     outputTokens: 0,
@@ -133,11 +141,15 @@ function addUsage(turn: Live, usage: {
 function closeStepOf(turn: Live | null, now: number): void {
   if (turn === null || turn.stepStartedAt === null) return
 
-  if (turn.stepFirstAt !== null) {
-    turn.streamMs += now - turn.stepFirstAt
+  // To the last chunk, never to `now`: the gap after the last piece is the
+  // model idle, not time spent generating, and counting it lowered the rate.
+  const end = turn.lastChunkAt ?? turn.stepFirstAt
+  if (turn.stepFirstAt !== null && end !== null) {
+    turn.streamMs += Math.max(0, end - turn.stepFirstAt)
   }
   turn.stepStartedAt = null
   turn.stepFirstAt = null
+  turn.lastChunkAt = null
 }
 
 /**
@@ -149,7 +161,14 @@ function closeStepOf(turn: Live | null, now: number): void {
  * a clock read by then, and the turn may have ended while it waited.
  */
 function measureOf(turn: Live, now: number): StepStats {
-  const streamMs = turn.streamMs + (turn.stepFirstAt !== null ? now - turn.stepFirstAt : 0)
+  // The step in flight counts up to its last chunk, not to `now`: between
+  // chunks the model is not streaming, and adding that time made the rate
+  // slide toward zero while the person waited for the next piece.
+  const inFlightMs =
+    turn.stepFirstAt !== null && turn.lastChunkAt !== null
+      ? Math.max(0, turn.lastChunkAt - turn.stepFirstAt)
+      : 0
+  const streamMs = turn.streamMs + inFlightMs
   const tps = turn.outputTokens > 0 && streamMs > 0 ? turn.outputTokens / (streamMs / 1000) : null
 
   return {
@@ -364,12 +383,16 @@ export const register: Register = on => {
     try {
       const stream = next(e)
       for await (const chunk of stream) {
-        if (live !== null && live.stepFirstAt === null && chunk.kind !== 'engine' && chunk.kind !== 'stop') {
-          // Text, thinking, a tool call or its arguments: the model has answered.
-          const firstNow = await $.clock.now()
-          if (live !== null && live.stepFirstAt === null && live.stepStartedAt !== null) {
-            live.stepFirstAt = firstNow
-            live.firstWaitMs ??= firstNow - live.stepStartedAt
+        if (live !== null && chunk.kind !== 'engine' && chunk.kind !== 'stop') {
+          // A piece of the answer: the stream clock runs to each one, so a pause
+          // between two of them is not counted as time spent generating.
+          const now = await $.clock.now()
+          if (live !== null) {
+            live.lastChunkAt = now
+            if (live.stepFirstAt === null && live.stepStartedAt !== null) {
+              live.stepFirstAt = now
+              live.firstWaitMs ??= now - live.stepStartedAt
+            }
           }
         }
         if (live !== null && chunk.kind === 'stop' && chunk.usage !== null) {

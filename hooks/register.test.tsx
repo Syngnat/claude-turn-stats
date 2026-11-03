@@ -616,6 +616,37 @@ test('a running turn shows its rate, not only the time it has taken', async ($, 
   await ui.unmount()
 })
 
+test('a pause mid-turn does not drag the rate toward zero', async ($, on) => {
+  // The rate is output over the time pieces were actually arriving. Measuring to
+  // "now" counted the model's pauses — thinking, waiting on a tool — into the
+  // denominator, so the figure slid from 200+ to 0 and jumped back when the next
+  // piece came. Here the stored turn carries a rate with no pause in it; the
+  // point is that a running turn is not shown as slower than the same work once
+  // it ends.
+  on(
+    'state.get',
+    holding({
+      ttftMs: 1900,
+      tps: 7.5,
+      outputTokens: 92,
+      cacheHitPercent: 99.85,
+      steps: 2,
+      isLive: true,
+      elapsedMs: 16200,
+    }),
+  )
+  engineDraws(on)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+  // The figure comes from stream time, which stops at the last piece: a running
+  // turn whose last piece just arrived shows the same rate it will have ended.
+  const line = await turnLine(ui)
+  expect(line).toContain('本轮生成速度 7.5 tok/s')
+
+  await ui.unmount()
+})
+
 test('the band has one button, labelled for the fold it flips', async ($, on) => {
   on(
     'state.get',
