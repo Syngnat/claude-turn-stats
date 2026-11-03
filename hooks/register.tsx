@@ -38,7 +38,16 @@ type Live = {
    */
   lastChunkAt: number | null
   firstWaitMs: number | null
+  /** Stream time of the steps that have finished. */
   streamMs: number
+  /**
+   * Output tokens produced during `streamMs` — only the finished steps. The step
+   * in flight's tokens are counted as they settle, but its time is not yet a
+   * closed window, so pairing the two would report a rate over a window that has
+   * not ended. Kept apart so the rate is always tokens over the time they took.
+   */
+  settledTokens: number
+  /** Every token of the turn so far, finished steps and the one in flight. */
   outputTokens: number
   inputTokens: number
   cacheReadTokens: number
@@ -111,6 +120,7 @@ function blankTurn(turnId: string, startedAt: number): Live {
     lastChunkAt: null,
     firstWaitMs: null,
     streamMs: 0,
+    settledTokens: 0,
     outputTokens: 0,
     inputTokens: 0,
     cacheReadTokens: 0,
@@ -138,7 +148,7 @@ function addUsage(turn: Live, usage: {
 }
 
 /** Closes the step in flight: its stream time joins the turn's running total. */
-function closeStepOf(turn: Live | null, now: number): void {
+function closeStepOf(turn: Live | null, now: number, stepTokens = 0): void {
   if (turn === null || turn.stepStartedAt === null) return
 
   // To the last chunk, never to `now`: the gap after the last piece is the
@@ -146,6 +156,9 @@ function closeStepOf(turn: Live | null, now: number): void {
   const end = turn.lastChunkAt ?? turn.stepFirstAt
   if (turn.stepFirstAt !== null && end !== null) {
     turn.streamMs += Math.max(0, end - turn.stepFirstAt)
+    // The tokens of this step and the time they took go together, so a rate can
+    // be taken over the closed steps alone while the next one runs.
+    turn.settledTokens += stepTokens
   }
   turn.stepStartedAt = null
   turn.stepFirstAt = null
@@ -185,33 +198,26 @@ const IMPLAUSIBLE_TPS = 1500
  * the rate is taken over that. The result is the end-to-end rate: what the
  * session actually got out per second of the turn.
  */
-function rateOf(turn: Live, streamMs: number, now: number): number | null {
-  if (turn.outputTokens <= 0) return null
+function rateOf(turn: Live): number | null {
+  // Over the steps that have finished, and only those: their tokens and the
+  // time they took are both closed figures. The step in flight has tokens but
+  // no finished window, and pairing the two would report a rate over a window
+  // that is still growing — the error that made the figure slide or explode.
+  if (turn.settledTokens <= 0 || turn.streamMs <= 0) return null
 
-  const streamed = streamMs > 0 ? turn.outputTokens / (streamMs / 1000) : null
-  if (streamed !== null && streamed <= IMPLAUSIBLE_TPS) return streamed
+  const rate = turn.settledTokens / (turn.streamMs / 1000)
 
-  // The stream window is unusable. Fall back to how long the turn has run,
-  // measured from the first token so the wait before it is not counted twice.
-  const elapsed = now - turn.startedAt
-  const waited = turn.firstWaitMs ?? 0
-  const generatingMs = Math.max(0, elapsed - waited)
-  if (generatingMs <= 0) return streamed
-
-  return turn.outputTokens / (generatingMs / 1000)
+  // Above what any model sustains: the pieces arrived in a burst, so the window
+  // is not a measure of generation. Report nothing rather than a number that
+  // means something else — a silent swap of the measurement is worse than a
+  // blank, because the figure looks ordinary and is not the same thing.
+  return rate <= IMPLAUSIBLE_TPS ? rate : null
 }
 
 function measureOf(turn: Live, now: number): StepStats {
-  // The step in flight counts up to its last chunk, not to `now`: between
-  // chunks the model is not streaming, and adding that time made the rate
-  // slide toward zero while the person waited for the next piece.
-  const inFlightMs =
-    turn.stepFirstAt !== null && turn.lastChunkAt !== null
-      ? Math.max(0, turn.lastChunkAt - turn.stepFirstAt)
-      : 0
-  const streamMs = turn.streamMs + inFlightMs
-
-  const tps = rateOf(turn, streamMs, now)
+  // Only closed steps feed the rate: their tokens and their time are both
+  // final. The step in flight has tokens but no finished window.
+  const tps = rateOf(turn)
 
   return {
     ttftMs: turn.firstWaitMs === null ? null : Math.round(turn.firstWaitMs),
@@ -456,16 +462,20 @@ export const register: Register = on => {
         // size from the result; add it only if the stop did not already.
         const usage = result?.usage
         if (counted === 0 && usage != null) {
-          live.outputTokens += usage.output_tokens ?? 0
+          counted = usage.output_tokens ?? 0
+          live.outputTokens += counted
           addUsage(live, usage)
         }
-        closeStepOf(live, await $.clock.now())
+        // The step's own tokens go with its own time, so the rate covers only
+        // windows that have closed.
+        closeStepOf(live, await $.clock.now(), counted)
       }
 
       return result
     } finally {
       tick.cancel()
-      if (live !== null) closeStepOf(live, await $.clock.now())
+      // Already closed above when the stream ran to its end; this covers a throw.
+      if (live !== null) closeStepOf(live, await $.clock.now(), counted)
     }
   })
 
@@ -580,12 +590,11 @@ export const register: Register = on => {
         }
       } else {
         add(`首 token 等待 ${msText(view.ttftMs)}`)
-        // Only after the turn ends. Measuring mid-stream meant timing the pieces
-        // as they arrive, and a gateway that buffers them delivers the whole
-        // answer in a burst — the figure then ran to thousands, or fell back to
-        // something that looked ordinary but measured a different thing. A rate
-        // that is wrong in two different ways is worse than one that waits.
-        if (view.isLive !== true && view.tps !== null && view.tps !== undefined) {
+        // From the steps that have finished: their tokens and their time are both
+        // closed figures, so the rate does not slide while the next step runs and
+        // does not change what it measures partway. It appears as soon as one
+        // step is done — during a long turn that is the first useful reading.
+        if (view.tps !== null && view.tps !== undefined) {
           add(`模型 ${view.tps.toFixed(1)} tok/s`, true)
         }
         // The size and the cache share are only final once the turn is: while it

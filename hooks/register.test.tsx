@@ -588,11 +588,10 @@ test('a running turn still feeds the averages when the file has caught up', asyn
   await ui.unmount()
 })
 
-test('a running turn shows its size and cache share, and no rate', async ($, on) => {
-  // The rate waits for the turn to end: timing the pieces as they arrive
-  // measures a buffering gateway, not the model, and gave two kinds of wrong
-  // figure. What the turn has produced so far is counted as responses settle,
-  // so that is real and is shown.
+test('a running turn shows a rate taken over its finished steps', async ($, on) => {
+  // The rate covers the steps that have finished: their tokens and their time
+  // are both closed. The step in flight has tokens but no finished window, and
+  // mixing the two is what made the figure slide or run away.
   on(
     'state.get',
     holding({
@@ -611,10 +610,10 @@ test('a running turn shows its size and cache share, and no rate', async ($, on)
 
   const line = await turnLine(ui)
   expect(line).toContain('首 token 等待 3.5s')
+  expect(line).toContain('模型 480.4 tok/s')
   expect(line).toContain('已生成 21.6k tok')
   expect(line).toContain('本轮缓存命中 91.73%')
   expect(line).toContain('已耗时 119.1s')
-  expect(line).not.toContain('模型')
 
   await ui.unmount()
 })
