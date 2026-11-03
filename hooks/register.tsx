@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
 import type { SessionTotals, StepStats } from '../types'
-import { parseTranscriptSum, totalsFrom, transcriptArgv, transcriptPathOf } from './transcript'
+import { parseTranscriptSum, settledRate, totalsFrom, transcriptArgv, transcriptPathOf } from './transcript'
 
 // No shape tag: every field added so far left the others' meaning alone, so a
 // value written by an earlier version still reads. Adding one now would decline
@@ -574,11 +574,12 @@ export const register: Register = on => {
         }
       } else {
         add(`首 token 等待 ${msText(view.ttftMs)}`)
-        // Running or ended, a rate is a rate: it is taken from the first token
-        // to now while the stream goes on, and to its end once it stops. Leaving
-        // it out until the turn ended hid the one figure worth watching during a
-        // long turn — which is exactly when a person looks at it.
-        if (view.tps !== null && view.tps !== undefined) {
+        // Only a figure measured from the transcript is shown, and that needs the
+        // turn to have settled: while one runs there is no honest window — the
+        // pieces of a buffered response arrive in a burst, and timing them gave
+        // rates twenty times the truth. Saying nothing beats saying a number that
+        // never happened; the rate appears once the turn ends.
+        if (view.isLive !== true && view.tps !== null && view.tps !== undefined) {
           add(`本轮生成速度 ${view.tps.toFixed(1)} tok/s`, true)
         }
         // The size and the cache share are only final once the turn is: while it
@@ -627,6 +628,12 @@ export const register: Register = on => {
               ({ exitCode, stdout }) => parseTranscriptSum(exitCode, stdout),
               () => null,
             )
+      // The rate is the transcript's own, not the stream's: a buffering gateway
+      // makes the pieces arrive in a burst, and no window inside one response
+      // can say how fast the tokens were produced. The gaps between responses
+      // are real, so the rate comes from there.
+      const settled = sum === null ? null : settledRate(sum.marks)
+
       const all =
         sum === null
           ? held
@@ -639,6 +646,7 @@ export const register: Register = on => {
                 ? (held?.steps ?? 0) + (live?.steps ?? 0)
                 : null,
             )
+      const measured = settled !== null ? { ...all!, tps: settled } : all
 
       // While a turn runs, the file lags it: a response's row is written as the
       // response settles, so what the turn has done so far is only in `live`.
@@ -649,6 +657,7 @@ export const register: Register = on => {
       // responses; adding `live` whole would count those twice. Steps the file
       // has are compared with the steps counted here, and the difference is what
       // is still missing.
+      const allMeasured = measured
       const running = live !== null && !live.isDone
       const runningTps = running && live !== null ? measureOf(live, await $.clock.now()).tps : null
       const liveWait = live?.firstWaitMs ?? null
@@ -657,19 +666,22 @@ export const register: Register = on => {
       // The session's rate is a weighted mean over stream time; the turn in
       // flight joins it the same way, not as a plain replacement.
       const sessionStreamMs =
-        all?.tps != null && all.tps > 0 ? (all.outputTokens / all.tps) * 1000 : 0
+        allMeasured?.tps != null && allMeasured.tps > 0
+          ? (allMeasured.outputTokens / allMeasured.tps) * 1000
+          : 0
       const liveStreamMs = runningTps != null && runningTps > 0 ? (liveOut / runningTps) * 1000 : 0
       const mergedTps =
         sessionStreamMs + liveStreamMs > 0
           ? Math.round(
-              ((all!.outputTokens + liveOut) / ((sessionStreamMs + liveStreamMs) / 1000)) * 10,
+              ((allMeasured!.outputTokens + liveOut) / ((sessionStreamMs + liveStreamMs) / 1000)) * 10,
             ) / 10
-          : all?.tps ?? null
-      const waitedBefore = all?.ttftMs != null ? Math.round(all.ttftMs * all.turns) : 0
+          : allMeasured?.tps ?? null
+      const waitedBefore =
+        allMeasured?.ttftMs != null ? Math.round(allMeasured.ttftMs * allMeasured.turns) : 0
       const mergedWait =
-        liveWait != null && all !== null
-          ? Math.round((waitedBefore + liveWait) / (all.turns + 1))
-          : all?.ttftMs ?? null
+        liveWait != null && allMeasured !== null
+          ? Math.round((waitedBefore + liveWait) / (allMeasured.turns + 1))
+          : allMeasured?.ttftMs ?? null
 
       // The band above may be showing a wait this mod did not measure itself:
       // it falls back to the stored turn, and `live` is still null when a reload
@@ -678,7 +690,7 @@ export const register: Register = on => {
       const fallbackWait = restored?.turn?.ttftMs ?? null
       const fallbackTps = restored?.turn?.tps ?? null
 
-      const heldSteps = all?.steps ?? 0
+      const heldSteps = allMeasured?.steps ?? 0
       const liveSteps = live?.steps ?? 0
       const missingSteps = Math.max(0, liveSteps - heldSteps)
 
@@ -690,21 +702,23 @@ export const register: Register = on => {
       // `all` wins when it already has averages; the fallbacks only fill a gap,
       // so a session whose file is complete still reads its own numbers.
       const shown =
-        all === null
-          ? all
+        allMeasured === null
+          ? allMeasured
           : {
-              ...all,
+              ...allMeasured,
               // A turn the file has not seen at all is still one turn; one it
               // has seen is already counted there.
-              turns: running ? all.turns + (heldSteps === 0 ? 1 : 0) : all.turns,
-              steps: running ? all.steps + missingSteps : all.steps,
+              turns: running ? allMeasured.turns + (heldSteps === 0 ? 1 : 0) : allMeasured.turns,
+              steps: running ? allMeasured.steps + missingSteps : allMeasured.steps,
               // The averages take the turn in flight in, so they move while it
               // runs instead of waiting for it to end. Both are merged the way
               // the session's own are: the wait by turn count, the rate by the
               // stream time each was measured over. Failing that, the last turn
               // this mod measured — the same figure the band above is showing.
-              ttftMs: running ? (mergedWait ?? all.ttftMs) : (all.ttftMs ?? fallbackWait),
-              tps: running ? (mergedTps ?? all.tps) : (all.tps ?? fallbackTps),
+              ttftMs: running ? (mergedWait ?? allMeasured.ttftMs) : (allMeasured.ttftMs ?? fallbackWait),
+              // The transcript's measured rate wins whenever there is one: the
+              // stream has no window that a buffering gateway cannot shrink.
+              tps: allMeasured.tps ?? (running ? mergedTps : fallbackTps),
             }
 
       // Nothing measured and nothing in the file: there is no total to draw,

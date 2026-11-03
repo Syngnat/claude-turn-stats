@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
+import { settledRate } from './transcript'
 
 /** The id this test session owns: what the store's entries are filed under. */
 const SESSION_ID = '11112222-3333-4444-5555-666677778888'
@@ -587,9 +588,11 @@ test('a running turn still feeds the averages when the file has caught up', asyn
   await ui.unmount()
 })
 
-test('a running turn shows its rate, not only the time it has taken', async ($, on) => {
-  // The rate is the figure worth watching during a long turn; hiding it until
-  // the turn ended left the line reading `已耗时 1145.5s` and nothing else.
+test('a running turn shows its size and its cache share, but no rate', async ($, on) => {
+  // The size and the cache share are counted as responses settle, so they are
+  // real while the turn runs. The rate is not: a buffered response's pieces
+  // arrive in a burst and any window inside it reports a rate that never
+  // happened. It waits for the turn to end, when the transcript can measure it.
   on(
     'state.get',
     holding({
@@ -607,73 +610,11 @@ test('a running turn shows its rate, not only the time it has taken', async ($, 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
 
   const line = await turnLine(ui)
-  expect(line).toContain('本轮生成速度 480.4 tok/s')
+  expect(line).toContain('首 token 等待 3.5s')
   expect(line).toContain('已生成 21.6k tok')
-  // The cache share is a running figure as well, not one held back for the end.
-  expect(line).toContain('本轮缓存命中')
+  expect(line).toContain('本轮缓存命中 91.73%')
   expect(line).toContain('已耗时 119.1s')
-
-  await ui.unmount()
-})
-
-test('a pause mid-turn does not drag the rate toward zero', async ($, on) => {
-  // The rate is output over the time pieces were actually arriving. Measuring to
-  // "now" counted the model's pauses — thinking, waiting on a tool — into the
-  // denominator, so the figure slid from 200+ to 0 and jumped back when the next
-  // piece came. Here the stored turn carries a rate with no pause in it; the
-  // point is that a running turn is not shown as slower than the same work once
-  // it ends.
-  on(
-    'state.get',
-    holding({
-      ttftMs: 1900,
-      tps: 7.5,
-      outputTokens: 92,
-      cacheHitPercent: 99.85,
-      steps: 2,
-      isLive: true,
-      elapsedMs: 16200,
-    }),
-  )
-  engineDraws(on)
-
-  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-
-  // The figure comes from stream time, which stops at the last piece: a running
-  // turn whose last piece just arrived shows the same rate it will have ended.
-  const line = await turnLine(ui)
-  expect(line).toContain('本轮生成速度 7.5 tok/s')
-
-  await ui.unmount()
-})
-
-test('a rate beyond what a model can produce is re-measured, not clamped', async ($, on) => {
-  // A buffered gateway delivers everything in one burst: the pieces arrive
-  // milliseconds apart while the tokens took seconds to make, so the stream
-  // window collapses and the rate runs to tens of thousands. The fix is not to
-  // cap the figure — that reports a number that never happened — but to measure
-  // over the turn itself, which the buffer cannot shrink.
-  //
-  // 420 tokens, first piece 2.8s in, turn 9.0s: 420 / (9.0 - 2.8) = 67.7 tok/s.
-  const live = {
-    ttftMs: 2800,
-    tps: 67.7,
-    outputTokens: 420,
-    cacheHitPercent: 99.92,
-    steps: 4,
-    isLive: true,
-    elapsedMs: 9000,
-  }
-  on('state.get', holding(live))
-  engineDraws(on)
-
-  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
-
-  const line = await turnLine(ui)
-  // Whatever the shape of the stream, the figure is a rate a model can produce.
-  const match = line.match(/本轮生成速度 ([\d.]+) tok\/s/)
-  expect(match).not.toBeNull()
-  expect(Number(match![1])).toBeLessThan(1000)
+  expect(line).not.toContain('本轮生成速度')
 
   await ui.unmount()
 })
@@ -814,3 +755,29 @@ test('with nothing measured yet, the unfolded band says so', async ($, on) => {
   expect((await ui.find({ type: 'Text', text: /还没有可统计的数据/ }))?.text).toBe('还没有可统计的数据')
   await ui.unmount()
 })
+
+test('the rate is measured between responses, where a buffer cannot shrink it', async () => {
+  // `settledRate` is pure: it reads the transcript's own `[settledAt, tokens]`
+  // marks and needs neither a session nor the engine.
+  // Six responses, one second apart, 100 tokens each: 500 tokens over 5 s.
+  const tight: Array<[number, number]> = Array.from({ length: 6 }, (_, at) => [
+    1_000_000 + at * 1000,
+    100,
+  ])
+  expect(settledRate(tight)).toBe(100)
+
+  // A gap longer than 90 s is the session idle, not the model thinking: the
+  // window stops before it rather than averaging the idle time in.
+  const idleThenBusy: Array<[number, number]> = [
+    [1_000_000, 100],
+    [1_200_000, 100], // 200 s later — the cut
+    [1_201_000, 100],
+    [1_202_000, 100],
+  ]
+  expect(settledRate(idleThenBusy)).toBe(100)
+
+  // One response is not a rate.
+  expect(settledRate([[1_000_000, 100]])).toBeNull()
+  expect(settledRate([])).toBeNull()
+})
+
