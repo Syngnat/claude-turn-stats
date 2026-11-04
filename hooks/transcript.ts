@@ -232,6 +232,9 @@ export function totalsFrom(
     outputTokens: sum.output,
     inputTokens: sum.input,
     cacheReadTokens: sum.cacheRead,
+    // The file's own share, over every turn it holds — the ones from before this
+    // mod was installed included. That is what the label promises: this
+    // conversation's cache hit, not the mod's since it loaded.
     cacheHitPercent: sum.input > 0 ? Math.round((sum.cacheRead / sum.input) * 10000) / 100 : null,
     contextPercent,
   }
