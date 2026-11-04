@@ -620,7 +620,8 @@ test('a running turn shows a rate taken over its finished steps', async ($, on) 
   expect(line).toContain('模型 480.4 tok/s')
   expect(line).toContain('已生成 21.6k tok')
   expect(line).toContain('本轮缓存命中 91.73%')
-  expect(line).toContain('已耗时 119.1s')
+  // Long turns read in minutes: 119.1 s is 1m59s.
+  expect(line).toContain('已耗时 1m59s')
 
   await ui.unmount()
 })
@@ -705,6 +706,33 @@ test('the means are taken over their own sums, never over the file’s totals', 
   // The fold's value is the bare figure; the line above prefixes it with 模型.
   expect((await ui.find({ type: 'Text', text: /^369\.2 tok\/s$/ }))?.text).toBe('369.2 tok/s')
   expect(await ui.find({ type: 'Text', text: /6600/ })).toBeUndefined()
+
+  await ui.unmount()
+})
+
+test('a finished turn ends with how long it took in all', async ($, on) => {
+  // The line's last segment is the turn's own length. While it runs that is the
+  // time so far; once it ends it is what the turn took, which is the figure a
+  // person compares one turn against the next.
+  on(
+    'state.get',
+    holding({
+      ttftMs: 24000,
+      tps: 285,
+      outputTokens: 2000,
+      cacheHitPercent: 80.25,
+      steps: 5,
+      isLive: false,
+      elapsedMs: 153_000,
+    }),
+  )
+  engineDraws(on)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
+
+  const line = await turnLine(ui)
+  expect(line).toContain('总耗时 2m33s')
+  expect(line).not.toContain('已耗时')
 
   await ui.unmount()
 })

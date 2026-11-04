@@ -1,5 +1,5 @@
 {
   "name": "turn-stats",
-  "version": "0.2.24",
+  "version": "0.2.25",
   "description": "在提示框上方显示首 token 等待、生成速度、token 用量与缓存命中率，展开可看整个会话的平均值与累计 token。 · Shows first-token latency, output TPS, token usage and cache hit rate above the prompt, with session-wide averages and cumulative token totals you can unfold."
 }

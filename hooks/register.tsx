@@ -62,6 +62,23 @@ function msText(ms: number): string {
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`
 }
 
+/**
+ * A turn's length. Seconds are fine for the short waits, but a long turn reads
+ * better in minutes: `2397.8s` has to be divided by sixty in the head, `39m58s`
+ * does not.
+ */
+function durText(ms: number): string {
+  const total = Math.max(0, Math.round(ms))
+  if (total < 1000) return `${total}ms`
+
+  const seconds = total / 1000
+  if (seconds < 60) return `${seconds.toFixed(1)}s`
+
+  const minutes = Math.floor(seconds / 60)
+  const rest = Math.round(seconds - minutes * 60)
+  return rest === 0 ? `${minutes}m` : `${minutes}m${rest}s`
+}
+
 function tokText(tokens: number): string {
   if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`
   return tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : `${tokens}`
@@ -651,12 +668,18 @@ export const register: Register = on => {
         if (view.cacheHitPercent !== null && view.cacheHitPercent !== undefined) {
           add(`本轮缓存命中 ${percentText(view.cacheHitPercent)}`, true)
         }
-        if (view.isLive === true) {
-          add(`已耗时 ${msText(view.elapsedMs ?? 0)}`)
-        }
         // Left out rather than drawn as `undefined` when the value predates it.
         if (view.steps !== undefined && view.steps > 0) {
           add(`${view.steps} 步`)
+        }
+        // The turn's own length, last on the line: while it runs that is how long
+        // it has been going, once it ends it is what the turn took in all.
+        if (view.elapsedMs != null && view.elapsedMs > 0) {
+          add(
+            view.isLive === true
+              ? `已耗时 ${durText(view.elapsedMs)}`
+              : `总耗时 ${durText(view.elapsedMs)}`,
+          )
         }
       }
     }
