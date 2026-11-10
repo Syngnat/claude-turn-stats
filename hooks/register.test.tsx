@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
-import { combineRate, combineWait, settledRate } from './transcript'
+import { combineRate, combineWait, parseTranscriptSum } from './transcript'
 
 /** The id this test session owns: what the store's entries are filed under. */
 const SESSION_ID = '11112222-3333-4444-5555-666677778888'
@@ -434,14 +434,18 @@ test('a value left under an old shape tag draws its inside, not undefined', asyn
 
 test('a stored value of another shape draws nothing rather than throwing', async ($, on) => {
   // Anything at all may be sitting under the key; a drawing hook that assumed
-  // its own shape would throw and take the band with it.
+  // its own shape would throw and take the band with it. The band still draws
+  // its own line — the way into the session totals must survive a value from
+  // another version.
   on('state.get', () => ({ value: { value: { somethingElse: true }, version: 1 } }))
   engineDraws(on)
+  usageOf(on)
 
   const ui = await $.ui.mount({ ...BAND, surface: 'desktop' })
 
   expect(await ui.find({ type: 'Text', text: /首 token/ })).toBeUndefined()
-  expect((await ui.find({ type: 'Text', text: 'engine' }))?.text).toBe('engine')
+  expect((await ui.find({ type: 'Text', text: '尚未测量到本轮数据' }))?.text).toBe('尚未测量到本轮数据')
+  expect((await ui.find({ type: 'Button' }))?.text).toBe('会话统计')
   await ui.unmount()
 })
 
@@ -874,29 +878,28 @@ test('with nothing measured yet, the unfolded band says so', async ($, on) => {
   await ui.unmount()
 })
 
-test('the rate is measured between responses, where a buffer cannot shrink it', async () => {
-  // `settledRate` is pure: it reads the transcript's own `[settledAt, tokens]`
-  // marks and needs neither a session nor the engine.
-  // Six responses, one second apart, 100 tokens each: 500 tokens over 5 s.
-  const tight: Array<[number, number]> = Array.from({ length: 6 }, (_, at) => [
-    1_000_000 + at * 1000,
-    100,
-  ])
-  expect(settledRate(tight)).toBe(100)
+test('the transcript child sums the complete usage row, not the placeholder', async () => {
+  // The engine writes a response once per content block: the first row carries
+  // the thinking block with a placeholder usage (0 output, prompt not yet split
+  // from the cache), the later rows carry what the API billed. Keeping the first
+  // row read 14% low on output and 6% high on prompt-side input across a real
+  // history. The child keeps the row with the most output instead.
+  const stdout = JSON.stringify({
+    turns: 3,
+    responses: 2,
+    input: 1810,
+    output: 800,
+    cacheRead: 1780,
+  })
 
-  // A gap longer than 90 s is the session idle, not the model thinking: the
-  // window stops before it rather than averaging the idle time in.
-  const idleThenBusy: Array<[number, number]> = [
-    [1_000_000, 100],
-    [1_200_000, 100], // 200 s later — the cut
-    [1_201_000, 100],
-    [1_202_000, 100],
-  ]
-  expect(settledRate(idleThenBusy)).toBe(100)
+  const sum = parseTranscriptSum(0, stdout)
+  expect(sum).toEqual({ turns: 3, responses: 2, input: 1810, output: 800, cacheRead: 1780 })
+})
 
-  // One response is not a rate.
-  expect(settledRate([[1_000_000, 100]])).toBeNull()
-  expect(settledRate([])).toBeNull()
+test('a child that printed nothing usable leaves the totals alone', async () => {
+  expect(parseTranscriptSum(1, '')).toBeNull()
+  expect(parseTranscriptSum(0, 'not json')).toBeNull()
+  expect(parseTranscriptSum(0, '[]')).toBeNull()
 })
 
 test('combineRate adds the sums; it never divides one total by the other rate', async () => {

@@ -12,11 +12,16 @@
  * already has on the developer's macOS and virtually every Linux; it is handed
  * the path and reads it line by line, never all at once.
  *
- * **Why the dedup.** The engine writes a message more than once as it updates
- * it (a streamed row re-stored, a sidechain replayed); the same API response can
- * therefore appear as several rows. `message.id` is the API's own id for the
- * response, so counting a row only the first time its `message.id` is seen
- * counts each response once.
+ * **Why the dedup, and which row survives.** The engine writes a response more
+ * than once as it settles, one row per content block. The rows of one API
+ * response share `message.id`, but they do not share its usage: the first row
+ * (the thinking block) carries a placeholder count — `output_tokens: 0`, with
+ * the prompt not yet split from the cache — and the later rows carry what the
+ * API actually billed. Keeping the first row therefore undercounted output by
+ * 14% and overcounted prompt-side input by 6% across a real history, and
+ * reported a 79% cache hit where the true figure was 98%. Keeping the row with
+ * the most output (a tie keeps the later one) makes the sum agree with the API
+ * whichever order a given engine version writes the blocks in.
  */
 import type { SessionTotals } from '../types'
 
@@ -26,47 +31,87 @@ import type { SessionTotals } from '../types'
  * file holds none yet.
  */
 const PROGRAM = String.raw`
-import datetime, json, sys
+import json, sys
 
 path = sys.argv[1]
-seen = set()
-input_tokens = 0
-output_tokens = 0
-cache_read = 0
-cache_creation = 0
-responses = 0
+
+# One bucket per unique API response; each row of it replaces the bucket when
+# it carries at least as much output, so the complete usage row is the one kept.
+responses = {}
 turns = 0
-# (timestamp in ms, output tokens) per unique response, in file order.
-marks = []
+
+# What the engine raises itself rather than the person typing it: slash-command
+# plumbing, background-task notices, and the two markers it injects when a
+# session resumes or an interrupt lands. None of these is a turn.
+SYNTHETIC_PREFIXES = (
+    "<local-command-",
+    "<command-name>",
+    "<command-message>",
+    "<task-notification>",
+    "This session is being continued from a previous conversation",
+)
+SYNTHETIC_EXACT = ("[Request interrupted by user]",)
+
+
+def text_of(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+    return ""
+
+
+def is_human_turn(row):
+    message = row.get("message")
+    if not isinstance(message, dict):
+        return False
+    content = message.get("content")
+    blocks = content if isinstance(content, list) else []
+    # A user row that carries a tool result is the engine handing a tool's
+    # output back to the model, not the person speaking.
+    if any(isinstance(block, dict) and block.get("type") == "tool_result" for block in blocks):
+        return False
+    if row.get("isMeta"):
+        return False
+    text = text_of(content).lstrip()
+    if text in SYNTHETIC_EXACT or text.startswith(SYNTHETIC_PREFIXES):
+        return False
+    # The engine's own word for it: origin.kind is 'human' exactly when the
+    # person sent the prompt. Where a transcript predates that field, the shape
+    # of the row is the fallback: text or an image, nothing the engine raised.
+    origin = row.get("origin")
+    if isinstance(origin, dict):
+        return origin.get("kind") == "human"
+    # Legacy rows carry no origin at all. The engine's own placeholder for an
+    # image it attached reads like a text prompt, so it is named out here.
+    if text.startswith("[Image:"):
+        return False
+    if isinstance(content, str):
+        return True
+    return any(isinstance(block, dict) and block.get("type") in ("text", "image") for block in blocks)
+
 
 with open(path, "r", encoding="utf-8", errors="replace") as f:
     for line in f:
-        line = line.strip()
-        if not line:
+        # Most rows are tool results, attachments, request records and title
+        # updates. A cheap substring test rejects them before the parse; a row
+        # that names neither event cannot be one this sum reads.
+        if '"assistant"' not in line and '"user"' not in line:
             continue
         try:
             row = json.loads(line)
         except Exception:
             continue
-        if row.get("type") == "user":
-            # A human turn: a user row with no tool_result block. The engine also
-            # writes user rows that carry tool results, and rows it raises itself
-            # (isMeta) — neither is something the person typed, so neither counts.
-            message = row.get("message")
-            if not isinstance(message, dict):
-                continue
-            content = message.get("content")
-            blocks = content if isinstance(content, list) else []
-            is_tool_result = any(
-                isinstance(block, dict) and block.get("type") == "tool_result"
-                for block in blocks
-            )
-            if is_tool_result or row.get("isMeta"):
-                continue
-            turns += 1
+        kind = row.get("type")
+        if kind == "user":
+            if is_human_turn(row):
+                turns += 1
             continue
-
-        if row.get("type") != "assistant":
+        if kind != "assistant":
             continue
         message = row.get("message")
         if not isinstance(message, dict):
@@ -75,32 +120,31 @@ with open(path, "r", encoding="utf-8", errors="replace") as f:
         if not isinstance(usage, dict):
             continue
         uid = message.get("id") or row.get("uuid")
-        if uid is not None:
-            if uid in seen:
-                continue
-            seen.add(uid)
-        responses += 1
+        bucket = responses.get(uid)
+        if bucket is None:
+            bucket = [0, 0, 0, 0, -1]
+            responses[uid] = bucket
+        # A response's rows do not share one usage: the placeholder row (the
+        # thinking block) reports 0 output and an unsplit prompt, while the row
+        # the API billed in full has the output. Keep the row with the most
+        # output, and let a tie keep the later one, so the whole bucket always
+        # comes from one single row.
+        out = int(usage.get("output_tokens") or 0)
+        if out >= bucket[4]:
+            bucket[0] = int(usage.get("input_tokens") or 0)
+            bucket[1] = out
+            bucket[2] = int(usage.get("cache_read_input_tokens") or 0)
+            bucket[3] = int(usage.get("cache_creation_input_tokens") or 0)
+            bucket[4] = out
 
-        # When the response settled, in milliseconds. The engine stamps every
-        # row; a row without one cannot be placed in time and is left out of the
-        # rate, which is the only place the timestamp is used.
-        when = row.get("timestamp")
-        if isinstance(when, str) and when:
-            try:
-                parsed = datetime.datetime.fromisoformat(when.replace("Z", "+00:00"))
-                marks.append([int(parsed.timestamp() * 1000), int(usage.get("output_tokens") or 0)])
-            except Exception:
-                pass
-
-        input_tokens += int(usage.get("input_tokens") or 0)
-        output_tokens += int(usage.get("output_tokens") or 0)
-        cache_read += int(usage.get("cache_read_input_tokens") or 0)
-        cache_creation += int(usage.get("cache_creation_input_tokens") or 0)
+input_tokens = sum(bucket[0] for bucket in responses.values())
+output_tokens = sum(bucket[1] for bucket in responses.values())
+cache_read = sum(bucket[2] for bucket in responses.values())
+cache_creation = sum(bucket[3] for bucket in responses.values())
 
 print(json.dumps({
-    "marks": marks,
     "turns": turns,
-    "responses": responses,
+    "responses": len(responses),
     "input": input_tokens + cache_read + cache_creation,
     "output": output_tokens,
     "cacheRead": cache_read,
@@ -109,8 +153,6 @@ print(json.dumps({
 
 /** What the child printed, before it is turned into the pane's figures. */
 export type TranscriptSum = {
-  /** `[settledAtMs, outputTokens]` per response, in file order. */
-  marks: Array<[number, number]>
   turns: number
   responses: number
   input: number
@@ -126,18 +168,18 @@ function parseSum(stdout: string): TranscriptSum | null {
     return null
   }
 
-  if (raw === null || typeof raw !== 'object') return null
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null
 
   const value = raw as Record<string, unknown>
   const number = (field: unknown): number =>
     typeof field === 'number' && Number.isFinite(field) ? field : 0
 
+  // The two counts are the shape's own proof: a JSON object without them is not
+  // this child's answer (another program's stdout, a truncated print), and
+  // reading it as zeroes would draw an empty session beside real figures.
+  if (typeof value.turns !== 'number' || typeof value.responses !== 'number') return null
+
   return {
-    marks: Array.isArray(value.marks)
-      ? (value.marks as unknown[])
-          .filter((one): one is [number, number] => Array.isArray(one) && one.length === 2)
-          .map(([at, tokens]) => [Number(at), Number(tokens)] as [number, number])
-      : [],
     turns: number(value.turns),
     responses: number(value.responses),
     input: number(value.input),
@@ -238,55 +280,6 @@ export function totalsFrom(
     cacheHitPercent: sum.input > 0 ? Math.round((sum.cacheRead / sum.input) * 10000) / 100 : null,
     contextPercent,
   }
-}
-
-/**
- * The output rate of the session's last stretch of work, measured from the
- * transcript itself.
- *
- * This is the only honest way to get the figure through a buffering gateway:
- * the pieces of one response can arrive in a burst, so the time between them
- * says nothing, but the time between one response settling and the next one
- * settling cannot be compressed by a buffer — the engine writes each row when
- * the API finished answering.
- *
- * The window is the last few responses that ran back to back. A gap much longer
- * than the rest is the person reading, a tool running, or the session sitting
- * idle, and counting that would report a rate nobody sustained — so the window
- * stops before it.
- *
- * @param marks `[settledAtMs, outputTokens]` in file order
- * @returns the rate in tokens a second, or `null` when there is too little to go on
- */
-export function settledRate(marks: Array<[number, number]>): number | null {
-  if (marks.length < 2) return null
-
-  // Every response in the file, not a trailing window: the session's rate is the
-  // whole session's, and a window of the last few made the fold's "average" the
-  // same figure as the line above it.
-  //
-  // A gap longer than this is the person reading, a tool running, or the session
-  // sitting idle. Those seconds are skipped, not counted into the denominator —
-  // counting them would report a rate far below the one the model sustained.
-  const MAX_GAP_MS = 90_000
-
-  let tokens = 0
-  let spanMs = 0
-
-  for (let at = 1; at < marks.length; at += 1) {
-    const gap = marks[at]![0] - marks[at - 1]![0]
-    if (gap <= 0 || gap > MAX_GAP_MS) continue
-
-    // The tokens of the later response were produced over this gap: the previous
-    // one had settled when the clock started. The first response's own time is
-    // before any gap, so it is not in the sum.
-    tokens += marks[at]![1]
-    spanMs += gap
-  }
-
-  if (spanMs <= 0 || tokens <= 0) return null
-
-  return Math.round((tokens / (spanMs / 1000)) * 10) / 10
 }
 
 /**

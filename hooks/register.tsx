@@ -1,7 +1,8 @@
 import { atom, read, update } from 'claude-code'
-import type { Register } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
 
 import type { SessionTotals, StepStats } from '../types'
+import type { TranscriptSum } from './transcript'
 import { combineRate, combineWait, parseTranscriptSum, totalsFrom, transcriptArgv, transcriptPathOf } from './transcript'
 
 // No shape tag: every field added so far left the others' meaning alone, so a
@@ -57,6 +58,57 @@ type Live = {
 }
 
 let live: Live | null = null
+
+/**
+ * The transcript's sums as the last child reported them, with the file stamp
+ * they describe.
+ *
+ * The band redraws once a second while a turn runs and on every keystroke, and
+ * the unfolded totals read the file on each of those draws. Spawning `python3`
+ * over a 50 MB transcript for every one of them costs more than the figure is
+ * worth — the file only changes when a response settles, and that moves both
+ * size and mtime. A stat is one syscall; the child runs only when the file
+ * actually moved.
+ */
+let transcriptCache: { path: string; stamp: string; sum: TranscriptSum } | null = null
+
+/**
+ * The transcript's sums, from the last child whose window still describes the
+ * file, or from a fresh one when the file has changed under it.
+ *
+ * A file that cannot be stat'ed reads as `null`: the caller keeps the totals it
+ * already had rather than drawing zeros. Without `fs.stat` beneath (an older
+ * host) the child runs every time, which is what it did before this cache.
+ */
+async function sumTranscript(
+  $: EngineInterface,
+  path: string | null,
+): Promise<TranscriptSum | null> {
+  if (path === null) return null
+
+  let stamp: string | null = null
+  try {
+    const stat = await $.fs.stat(path)
+    stamp = `${stat.size}:${stat.mtimeMs}`
+  } catch {
+    stamp = null
+  }
+
+  const held = transcriptCache
+  if (held !== null && stamp !== null && held.path === path && held.stamp === stamp) {
+    return held.sum
+  }
+
+  const sum = await $.process.run(transcriptArgv(path)).then(
+    ({ exitCode, stdout }) => parseTranscriptSum(exitCode, stdout),
+    () => null,
+  )
+  if (sum !== null && stamp !== null) {
+    transcriptCache = { path, stamp, sum }
+  }
+
+  return sum
+}
 
 function msText(ms: number): string {
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`
@@ -318,6 +370,16 @@ function normalizeTotals(raw: unknown): SessionTotals | null {
 }
 
 /**
+ * Whether the totals are unfolded, read from whatever sits under the key.
+ *
+ * `false` for anything that is not a boolean: a value another shape left there
+ * folds the panel rather than throwing on the way to the drawing.
+ */
+function normalizeExpanded(raw: unknown): boolean {
+  return raw === true
+}
+
+/**
  * Adds the turn that just ended to the session's running figures, and reads the
  * context window from the engine's own count.
  *
@@ -439,6 +501,8 @@ export const register: Register = on => {
     const id = await $.session.id()
     sessionId = id
     transcriptPath = transcriptPathOf(home, e.cwd, id)
+    // Another session's sums say nothing about this one.
+    transcriptCache = null
 
     await $.command.register({
       name: 'turn-stats',
@@ -559,13 +623,7 @@ export const register: Register = on => {
     // waited, so the waits and the rates are the ones measured here.
     const held = await read($, totals)
     const usage = await $.session.usage()
-    const sum =
-      transcriptPath === null
-        ? null
-        : await $.process.run(transcriptArgv(transcriptPath)).then(
-            ({ exitCode, stdout }) => parseTranscriptSum(exitCode, stdout),
-            () => null,
-          )
+    const sum = await sumTranscript($, transcriptPath)
     const averaged = addToTotals(normalizeTotals(held), done, usage.context.percent ?? null)
     const nextTotals =
       sum === null
@@ -604,7 +662,7 @@ export const register: Register = on => {
 
   // The same switch the band's button flips, for the prompt's own typing.
   on('command.run', { command: 'turn-stats' }, async $ => {
-    const open = await read($, isExpanded)
+    const open = normalizeExpanded(await read($, isExpanded))
     await update($, isExpanded, () => !open)
 
     return { text: open ? 'Turn stats folded.' : 'Turn stats unfolded.' }
@@ -690,7 +748,10 @@ export const register: Register = on => {
       add('尚未测量到本轮数据')
     }
 
-    const isOpen = await read($, isExpanded)
+    // Read defensively: whatever sits under the key may be another value's
+    // shape, and a drawing hook that trusted it would throw and take the band
+    // with it (`normalizeTurn` and `normalizeTotals` guard the other two).
+    const isOpen = normalizeExpanded(await read($, isExpanded))
 
     // Unfolded, the session's own arithmetic: the averages this mod measured,
     // over the whole transcript's tokens. Read here, on the way in, so they are
@@ -703,13 +764,7 @@ export const register: Register = on => {
       // transcript alone cannot say how many turns ran or how long they waited.
       const held = normalizeTotals(await read($, totals)) ?? restored?.totals ?? null
       const usage = await $.session.usage()
-      const sum =
-        transcriptPath === null
-          ? null
-          : await $.process.run(transcriptArgv(transcriptPath)).then(
-              ({ exitCode, stdout }) => parseTranscriptSum(exitCode, stdout),
-              () => null,
-            )
+      const sum = await sumTranscript($, transcriptPath)
       const all =
         sum === null
           ? held

@@ -62,19 +62,22 @@ Claude Code **2.1.287** or later — mods need it, and so does everything here. 
 
 Without `python3` the mod still loads and still shows each turn's figures — those are measured in-process. Only the session totals fall back to what the mod summed itself, which covers the turns since it loaded rather than the whole session, so they read low. It does not crash.
 
+The transcript is re-read only when it changes: the mod stats the file and reuses its last sums while size and mtime stay put, so a redraw a second while a turn runs costs one stat, not a `python3` run over the whole file.
+
 ## How the numbers are taken
 
 `turn.step` is the event that streams one model request. The mod timestamps the request going out and the first chunk that carries any of the answer, and the difference is the first-token wait. The output rate is the turn's `output_tokens` over the sum of its steps' streaming time.
 
 A turn that calls tools runs the model several times; the mod sums across those steps, since what you waited for was the whole turn.
 
-The session's token totals come from the transcript Claude Code writes (`~/.claude/projects/<project>/<session>.jsonl`), summed over every assistant response. Responses are deduplicated by their API message id: Claude Code re-stores a message as it updates it, and without the dedup the totals run high by roughly 40%.
+The session's token totals come from the transcript Claude Code writes (`~/.claude/projects/<project>/<session>.jsonl`), summed over every assistant response. Responses are deduplicated by their API message id, and the row kept is the one with the most output tokens: Claude Code re-stores a message once per content block, and the first row carries a placeholder count — zero output, the prompt not yet split from the cache. Keeping the first row (as earlier versions did) undercounted output by 14% and overcounted cached input by 6%, and read a 98% cache hit as 79%.
 
 The rate is a token-weighted mean over the session's streaming time, not the mean of the per-turn rates — a turn that produced 800 tokens in 4 s and one that produced 20 in 1 s average to 164 tok/s, not 205.
 
 ## Notes
 
 - Subagent turns are skipped: the band reports on your conversation, not on delegated work.
+- Only prompts you actually sent count as turns: slash-command plumbing, background-task notices, the resume banner and the interrupt marker are excluded, and so is a user row that carries a tool result. On transcripts old enough to predate the engine's own marker, the row's shape decides.
 - A first-token wait is taken from the first step only. Later steps in the same turn have no "you waited for the first token" moment.
 - The mod keeps its numbers in the session's plugin state. Closing the app clears them, and so does `/clear`; the transcript totals rebuild themselves on the next turn.
 
